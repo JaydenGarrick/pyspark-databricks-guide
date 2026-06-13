@@ -88,6 +88,11 @@ df.groupBy("country").count()  # all partitions processed in parallel</code></pr
 
     <h2 id="dbt-vs-spark">Databricks Runtime vs Open-Source Spark</h2>
 
+    <div class="callout info">
+      <div class="callout-title">Which DBR Version Should You Use?</div>
+      <p>Always use an <strong>LTS (Long-Term Support)</strong> runtime for any work you care about. LTS releases receive security patches and bug fixes for at least 2 years. As of 2025, <strong>DBR 15.4 LTS</strong> is the current recommended version. When creating a cluster, filter runtimes by "LTS" to see stable options. Non-LTS runtimes are preview/rolling releases &mdash; they add new features faster but break more often. The Databricks UI shows a star (★) or "LTS" badge next to long-term-support runtimes.</p>
+    </div>
+
     <p>Databricks doesn't just run vanilla Apache Spark. Databricks Runtime (DBR) is a hardened, optimized distribution that ships with proprietary optimizations on top of the open-source engine:</p>
 
     <table>
@@ -111,7 +116,7 @@ df.groupBy("country").count()  # all partitions processed in parallel</code></pr
 
     <div class="callout info">
       <div class="callout-title">Photon: The Silent Speedup</div>
-      <p>Photon is a vectorized query engine written in C++ that replaces Spark's JVM-based execution for SQL and DataFrame operations. To use Photon, select a runtime ending in <strong>"Photon"</strong> when creating a cluster (e.g., "14.3.x-photon-scala2.12"). It then automatically activates for supported operations &mdash; you don't change any code. Most SQL-heavy workloads see 2-8x speedup. The trade-off: Photon costs more DBUs per hour than non-Photon runtimes. Always benchmark before assuming Photon is cheaper end-to-end.</p>
+      <p>Photon is a vectorized query engine written in C++ that replaces Spark's JVM-based execution for SQL and DataFrame operations. To use Photon, select a runtime ending in <strong>"Photon"</strong> when creating a cluster (e.g., "15.4.x-photon-scala2.12" &mdash; the current 2025 LTS). It then automatically activates for supported operations &mdash; you don't change any code. Most SQL-heavy workloads see 2-8x speedup. The trade-off: Photon costs more DBUs per hour than non-Photon runtimes. Always benchmark before assuming Photon is cheaper end-to-end.</p>
     </div>
 
     <h2 id="cluster-types">Cluster Types: Which One to Use</h2>
@@ -265,8 +270,13 @@ diamonds.show(5)</code></pre>
     <div class="exercise">
       <div class="exercise-title">Exercises</div>
       <ol>
-        <li><strong>Identify your cluster type.</strong> In your Databricks workspace, open the Compute tab. For each cluster listed, determine whether it's an all-purpose, job (attached to a job), or SQL warehouse cluster. Check when each was last used and whether auto-termination is configured.</li>
-        <li><strong>Read the Spark UI.</strong> Load the diamonds dataset (see callout above) and run <code>diamonds.groupBy("cut").count().show()</code>. Open the Spark UI (cluster detail → Spark UI) and identify: how many stages did it create? Was there a shuffle? How many tasks ran per stage?</li>
+        <li><strong>Identify your compute types.</strong> In the left sidebar, click <strong>Compute</strong>. In the current Databricks UI (2024+), this page has two sections: <strong>All-purpose clusters</strong> (interactive notebooks) and <strong>SQL Warehouses</strong> (SQL Editor, Dashboards). If you only see SQL Warehouses and no all-purpose clusters, that's normal for a fresh or SQL-focused workspace &mdash; you'll need to create an All-Purpose cluster to run notebook code. For any cluster listed: check its state (Running/Terminated), its DBR version, and whether auto-termination is configured (shown as "Terminates after N minutes of inactivity"). SQL Warehouses auto-suspend independently &mdash; check the Suspend setting under the warehouse's Edit page.</li>
+        <li><strong>Read the Spark UI.</strong> First, attach a notebook to an All-Purpose cluster (not a SQL Warehouse). Load the diamonds dataset and run:
+          <pre><code class="language-python">diamonds = spark.read.format("csv").option("header", True).option("inferSchema", True) \
+    .load("/databricks-datasets/diamonds/diamonds.csv")
+diamonds.groupBy("cut").count().show()</code></pre>
+          <strong>Finding the Spark UI:</strong> After the cell runs, look for the blue <strong>Spark Jobs</strong> link directly below the cell output (it says "Job N, N tasks"). Click it &mdash; this opens the Spark UI for that specific job. Alternatively: left sidebar → <strong>Compute</strong> → click your cluster name → <strong>Spark UI</strong> tab at the top. In the Spark UI, go to <strong>Stages</strong> and identify: how many stages ran? Look for the "Shuffle Read/Write" column &mdash; a non-zero value means a shuffle happened. How many tasks ran per stage?
+        </li>
         <li><strong>Driver vs executor exercise.</strong> Run both approaches below and compare timing with <code>%%timeit</code>. The loop approach calls Spark 1,000 times (one <code>union</code> per row, all on the driver). The batch approach makes one Spark call. Why is the loop slower even on the same hardware?
           <pre><code class="language-python"># Loop approach: 1,000 driver-side Spark calls
 from pyspark.sql import Row
@@ -279,7 +289,7 @@ df.count()
 df2 = spark.createDataFrame([(i,) for i in range(1000)], ["id"])
 df2.count()</code></pre>
         </li>
-        <li><strong>Estimate cluster cost.</strong> Navigate to the Databricks pricing page (search "Databricks pricing" for your cloud provider), find the DBU rate for your cluster's instance type and runtime (all-purpose vs job, standard vs Photon). Estimate the hourly cost for your dev cluster assuming it runs 8 hours/day for a month. Now add auto-termination at 30 minutes idle and re-estimate. The difference is usually shocking.</li>
+        <li><strong>Estimate cluster cost.</strong> Go to <strong>databricks.com/pricing</strong> (this is the public Databricks marketing website &mdash; not your workspace console). Select your cloud provider (AWS/Azure/GCP). Find the DBU rate for All-Purpose compute, Standard tier. Then estimate: if your dev cluster runs 8 hours/day for 20 working days, what does it cost in DBUs? Now configure auto-termination at 30 minutes idle (Compute → your cluster → Edit → Auto Termination) and re-estimate assuming 50% idle time. The difference is usually significant. Note: DBU prices are listed at databricks.com/pricing; your actual cloud bill also includes VM costs (EC2/VMs) which are separate.</li>
       </ol>
     </div>
 
