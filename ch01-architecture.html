@@ -62,7 +62,7 @@
         <tr><th>Node Type</th><th>Role</th><th>What lives there</th></tr>
       </thead>
       <tbody>
-        <tr><td><strong>Driver</strong></td><td>One per cluster</td><td>Your notebook process, SparkContext, task scheduler, result collection</td></tr>
+        <tr><td><strong>Driver</strong></td><td>One per cluster</td><td>Your notebook process, SparkSession (the entry point your code uses), SparkContext (the lower-level engine it wraps), task scheduler, result collection</td></tr>
         <tr><td><strong>Executor</strong></td><td>N per cluster</td><td>JVM processes that execute tasks, hold partition data in memory, write shuffle files</td></tr>
       </tbody>
     </table>
@@ -101,8 +101,13 @@ df.groupBy("country").count()  # all partitions processed in parallel</code></pr
     </table>
 
     <div class="callout info">
+      <div class="callout-title">What Is a DBU?</div>
+      <p>A <strong>Databricks Unit (DBU)</strong> is Databricks' billing unit — a measure of processing capacity consumed per hour. You pay a $/DBU rate that depends on your cluster type (all-purpose vs job cluster), runtime (standard vs Photon), and Databricks tier. The same EC2 instance running as a job cluster costs fewer DBUs/hour than an all-purpose cluster. DBU rates are listed in the Databricks pricing page for your cloud region.</p>
+    </div>
+
+    <div class="callout info">
       <div class="callout-title">Photon: The Silent Speedup</div>
-      <p>Photon is a vectorized query engine written in C++ that replaces Spark's JVM-based execution for SQL and DataFrame operations. It automatically activates for supported operations &mdash; you don't change any code. Most SQL-heavy workloads see 2-8x speedup. The trade-off: Photon costs more DBUs (Databricks Units) per hour than non-Photon runtimes. Always benchmark before assuming Photon is cheaper end-to-end.</p>
+      <p>Photon is a vectorized query engine written in C++ that replaces Spark's JVM-based execution for SQL and DataFrame operations. To use Photon, select a runtime ending in <strong>"Photon"</strong> when creating a cluster (e.g., "14.3.x-photon-scala2.12"). It then automatically activates for supported operations &mdash; you don't change any code. Most SQL-heavy workloads see 2-8x speedup. The trade-off: Photon costs more DBUs per hour than non-Photon runtimes. Always benchmark before assuming Photon is cheaper end-to-end.</p>
     </div>
 
     <h2 id="cluster-types">Cluster Types: Which One to Use</h2>
@@ -248,8 +253,19 @@ df = spark.read.parquet("/Volumes/catalog/schema/volume/data/")</code></pre>
       <ol>
         <li><strong>Identify your cluster type.</strong> In your Databricks workspace, open the Compute tab. For each cluster listed, determine whether it's an all-purpose, job (attached to a job), or SQL warehouse cluster. Check when each was last used and whether auto-termination is configured.</li>
         <li><strong>Read the Spark UI.</strong> Run a simple <code>df.groupBy("some_col").count().show()</code> on a real DataFrame. Open the Spark UI and identify: how many stages did it create? Was there a shuffle? How many tasks ran per stage?</li>
-        <li><strong>Driver vs executor exercise.</strong> Create a list of 1,000 integers in Python and add each to a Spark DataFrame using a loop vs using <code>spark.createDataFrame()</code>. Compare the execution time. Why is the loop approach slower even though both run on the same hardware?</li>
-        <li><strong>Estimate cluster cost.</strong> Find the DBU rate for your cluster's instance type and runtime. Estimate the hourly cost for your dev cluster assuming it runs 8 hours/day for a month. Now add auto-termination at 30 minutes idle and re-estimate.</li>
+        <li><strong>Driver vs executor exercise.</strong> Run both approaches below and compare timing with <code>%%timeit</code>. The loop approach calls Spark 1,000 times (one <code>union</code> per row, all on the driver). The batch approach makes one Spark call. Why is the loop slower even on the same hardware?
+          <pre><code class="language-python"># Loop approach: 1,000 driver-side Spark calls
+from pyspark.sql import Row
+df = spark.createDataFrame([], "id INT")
+for i in range(1000):
+    df = df.union(spark.createDataFrame([Row(id=i)]))
+df.count()
+
+# Batch approach: one Spark call
+df2 = spark.createDataFrame([(i,) for i in range(1000)], ["id"])
+df2.count()</code></pre>
+        </li>
+        <li><strong>Estimate cluster cost.</strong> Navigate to the Databricks pricing page (search "Databricks pricing" for your cloud provider), find the DBU rate for your cluster's instance type and runtime (all-purpose vs job, standard vs Photon). Estimate the hourly cost for your dev cluster assuming it runs 8 hours/day for a month. Now add auto-termination at 30 minutes idle and re-estimate. The difference is usually shocking.</li>
       </ol>
     </div>
 

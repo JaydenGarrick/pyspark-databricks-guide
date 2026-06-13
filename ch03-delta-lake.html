@@ -121,6 +121,11 @@ df = spark.table("catalog.schema.my_table")</code></pre>
       </div>
     </div>
 
+    <div class="callout info">
+      <div class="callout-title">Managed vs External Tables</div>
+      <p>This is a critical distinction. <strong>Managed tables</strong> (<code>saveAsTable()</code> or <code>CREATE TABLE</code> without <code>LOCATION</code>) store data in a Databricks-managed location (your default catalog storage). When you <code>DROP TABLE</code>, Databricks <strong>deletes the underlying files</strong>. <strong>External tables</strong> (<code>.save("s3://...")</code> or <code>CREATE TABLE ... LOCATION 's3://...'</code>) store data at a path you control. Dropping the table only removes the metadata &mdash; the files remain. For production data you care about, prefer external tables (or Unity Catalog managed tables in a dedicated catalog with UC storage credentials) so a <code>DROP TABLE</code> doesn't wipe your data.</p>
+    </div>
+
     <p>Using SQL is often cleaner for table creation:</p>
 
     <pre><code class="language-sql">-- Create an empty Delta table with explicit schema
@@ -134,6 +139,7 @@ CREATE TABLE catalog.schema.orders (
 USING DELTA
 COMMENT 'Raw orders from the e-commerce platform'
 TBLPROPERTIES (
+    -- See Chapter 7 for what these do and when to enable them
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true'
 );
@@ -147,7 +153,7 @@ AS SELECT * FROM catalog.schema.orders WHERE country = 'US';</code></pre>
 
     <p>Every write to a Delta table creates a new version. You can read any historical version:</p>
 
-    <pre><code class="language-python">from delta.tables import DeltaTable
+    <pre><code class="language-python">from delta.tables import DeltaTable  # needed for all DeltaTable operations
 
 # View the table's history
 dt = DeltaTable.forName(spark, "catalog.schema.orders")
@@ -184,7 +190,7 @@ DESCRIBE HISTORY catalog.schema.orders;</code></pre>
 
     <p><code>MERGE INTO</code> is the single most powerful Delta Lake operation. It enables CDC (Change Data Capture) patterns, SCD Type 1/2, and incremental loads without full table rewrites:</p>
 
-    <pre><code class="language-python">from delta.tables import DeltaTable
+    <pre><code class="language-python">from delta.tables import DeltaTable  # already imported above — shown here for clarity
 
 target = DeltaTable.forName(spark, "catalog.silver.customers")
 
@@ -317,9 +323,13 @@ changes = spark.read.format("delta") \
     .option("startingVersion", 10) \
     .table("catalog.silver.orders")
 
-# The result includes _change_type: 'insert', 'update_preimage',
-# 'update_postimage', 'delete'
-changes.filter("_change_type = 'insert'").display()</code></pre>
+# _change_type values:
+#   'insert'           — new row added
+#   'update_preimage'  — the row's state BEFORE an update (the old values)
+#   'update_postimage' — the row's state AFTER an update (the new values)
+#   'delete'           — row was deleted
+# To get only the current state of updated rows, filter for 'update_postimage'
+changes.filter("_change_type IN ('insert', 'update_postimage')").display()</code></pre>
 
     <div class="callout success">
       <div class="callout-title">What You Practiced</div>

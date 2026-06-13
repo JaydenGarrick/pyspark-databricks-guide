@@ -80,6 +80,11 @@
       </tbody>
     </table>
 
+    <div class="callout info">
+      <div class="callout-title">This Dataset vs Chapter 13</div>
+      <p>This project uses its own self-contained sample dataset defined in <code>starter/analytics.py</code>. It includes a <code>channel</code> column (acquisition channel: 'organic', 'paid_search', 'email', etc.) that the Chapter 13 dataset does not have &mdash; the analytics project is designed for attribution analysis. The starter file creates these as in-memory temp views; no Delta tables or catalog setup is needed.</p>
+    </div>
+
     <div class="callout pyspark-note">
       <div class="callout-title">If You Know Basic PySpark</div>
       <p>These analytics patterns are common in every data team: "how many of our January cohort were still active in April?" (retention), "which channel drives the highest LTV?" (attribution). You can do them with DataFrame groupBy + pivot, but Spark SQL window functions are more expressive, more readable to stakeholders, and often faster because Catalyst can optimize them better.</p>
@@ -134,7 +139,9 @@ ORDER BY month</code></pre>
     <pre><code class="language-sql">-- TODO 3: Build cohort retention
 -- Expected output: cohort_month | months_since_signup | customers_active | retention_pct
 -- Step 1: join orders to customers to get each customer's cohort
--- Step 2: compute months_since_signup = DATEDIFF(months, cohort_month, order_month)
+-- Step 2: compute months_since_signup using MONTHS_BETWEEN()
+--         NOTE: Spark SQL's DATEDIFF() only works in days.
+--         Use CAST(FLOOR(MONTHS_BETWEEN(order_month, cohort_month)) AS INT) for whole months.
 -- Step 3: count distinct customers per cohort x months_since_signup
 -- Step 4: divide by cohort size to get retention_pct
 
@@ -235,10 +242,12 @@ ORDER BY month</code></pre>
 #   - Is the join between orders and customers a broadcast or sort-merge?
 #   - Does predicate pushdown appear anywhere in the plan?
 
-cohort_query = """
-    -- paste your TODO 3 solution here
-"""
-spark.sql(f"EXPLAIN FORMATTED {cohort_query}")</code></pre>
+# NOTE: EXPLAIN cannot be prepended directly to a multi-line string passed to spark.sql().
+# Instead, build the DataFrame and call .explain() on it:
+cohort_df = spark.sql("""
+    -- paste your TODO 3 solution here (without EXPLAIN)
+""")
+cohort_df.explain("formatted")</code></pre>
 
     <pre><code class="language-python"># TODO 8: Tune the cohort query.
 # If the customers table is small (&lt;10MB), add a BROADCAST hint.

@@ -309,6 +309,34 @@ QUALIFY RANK() OVER (
       <p>SQL clauses execute in this order: <code>FROM</code> → <code>WHERE</code> → <code>GROUP BY</code> → <code>HAVING</code> → window functions → <code>QUALIFY</code> → <code>SELECT</code> → <code>ORDER BY</code> → <code>LIMIT</code>. This means QUALIFY can reference window functions computed in the SELECT list, and it applies after WHERE (pre-aggregation filtering). Think of QUALIFY as "HAVING, but for window functions."</p>
     </div>
 
+    <h2 id="first-last">FIRST_VALUE and LAST_VALUE</h2>
+
+    <p><code>FIRST_VALUE</code> and <code>LAST_VALUE</code> return the first or last value in the window frame. <code>FIRST_VALUE</code> is straightforward. <code>LAST_VALUE</code> has a critical gotcha: by default, the frame ends at the <em>current row</em>, so it always returns the current row's value &mdash; not the last row in the partition.</p>
+
+    <pre><code class="language-sql">SELECT
+    customer_id,
+    order_id,
+    amount,
+    created_at,
+    -- FIRST_VALUE: works as expected — always the first order amount per customer
+    FIRST_VALUE(amount) OVER (
+        PARTITION BY customer_id
+        ORDER BY created_at
+    ) AS first_order_amount,
+
+    -- LAST_VALUE with DEFAULT frame: returns current row (wrong!)
+    -- LAST_VALUE(amount) OVER (PARTITION BY customer_id ORDER BY created_at)
+
+    -- LAST_VALUE with explicit UNBOUNDED frame: returns last row in partition (correct)
+    LAST_VALUE(amount) OVER (
+        PARTITION BY customer_id
+        ORDER BY created_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+    ) AS last_order_amount
+FROM orders;</code></pre>
+
+    <p>When you use <code>LAST_VALUE</code>, always specify <code>ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING</code> to extend the frame to the full partition. Otherwise you get the current row's value &mdash; which is usually not what you want.</p>
+
     <h2 id="named-windows">Named Windows</h2>
 
     <p>If you use the same window definition multiple times, define it once with a <code>WINDOW</code> clause:</p>
@@ -357,10 +385,12 @@ customer_activity AS (
         o.customer_id,
         c.cohort_month,
         DATE_TRUNC('month', o.created_at) AS activity_month,
-        DATEDIFF(MONTH,
-            c.cohort_month,
-            DATE_TRUNC('month', o.created_at)
-        ) AS months_since_acquisition
+        -- MONTHS_BETWEEN returns a decimal; FLOOR converts to whole months
+        -- Note: Spark SQL's DATEDIFF only works in days; use MONTHS_BETWEEN for month-level diffs
+        CAST(FLOOR(MONTHS_BETWEEN(
+            DATE_TRUNC('month', o.created_at),
+            c.cohort_month
+        )) AS INT) AS months_since_acquisition
     FROM orders o
     JOIN cohorts c USING (customer_id)
 )

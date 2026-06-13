@@ -90,6 +90,11 @@ s3.get_object(Bucket="my-secure-bucket", Key="config/settings.json")</code></pre
 
     <p>For credentials that aren't IAM-controlled (API keys, database passwords, third-party service tokens), use Databricks secrets:</p>
 
+    <div class="callout info">
+      <div class="callout-title">Installing the Databricks CLI</div>
+      <p>The Databricks CLI is a separate tool you install locally: <code>pip install databricks-cli</code> (v0.x) or download the standalone binary (v0.200+, recommended). Configure it with <code>databricks configure --token</code> &mdash; you'll need your workspace URL and a personal access token (generate one under User Settings → Access tokens in the Databricks UI). Once configured, all <code>databricks ...</code> commands work from your terminal.</p>
+    </div>
+
     <pre><code class="language-bash"># Set up a secret scope and secrets using the Databricks CLI
 databricks secrets create-scope --scope my-api-scope
 databricks secrets put --scope my-api-scope --key stripe-api-key

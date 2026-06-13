@@ -183,6 +183,8 @@ FROM orders;
 SELECT
     order_id,
     AGGREGATE(items, 0D, (acc, item) -> acc + item.price * item.qty) AS total
+    -- 0D is a double literal (0.0 as DOUBLE) — required because price is DECIMAL and
+    -- the accumulator type must match the return type
 FROM orders;</code></pre>
 
     <h3 id="struct-ops">Struct Operations</h3>
@@ -265,7 +267,9 @@ SELECT order_id, attr_key, attr_value
 FROM orders
 LATERAL VIEW EXPLODE(attributes) attrs AS attr_key, attr_value;
 
--- INLINE: explode an array of structs into columns
+-- INLINE: explode an array of structs into multiple columns (one column per struct field)
+-- Unlike EXPLODE which returns one column containing the struct,
+-- INLINE expands each struct field into its own named column.
 SELECT order_id, product_id, qty, price
 FROM orders
 LATERAL VIEW INLINE(items) item_table AS product_id, qty, price;
@@ -277,7 +281,12 @@ LATERAL VIEW POSEXPLODE(tags) tags_table AS pos, tag;</code></pre>
 
     <h2 id="execute-immediate">EXECUTE IMMEDIATE (Dynamic SQL)</h2>
 
-    <p>Available in Databricks Runtime 12.2+, <code>EXECUTE IMMEDIATE</code> runs a SQL string at runtime. This enables parameterized SQL and dynamic table/schema names:</p>
+    <div class="callout info">
+      <div class="callout-title">Version Requirements</div>
+      <p><code>EXECUTE IMMEDIATE</code> requires <strong>Databricks Runtime 12.2+</strong>. The <code>DECLARE</code> variable syntax requires <strong>DBR 14.1+ or Databricks SQL</strong>. These are Databricks-specific SQL extensions &mdash; they are not available in open-source Spark or standard ANSI SQL environments.</p>
+    </div>
+
+    <p><code>EXECUTE IMMEDIATE</code> runs a SQL string at runtime. This enables parameterized SQL and dynamic table/schema names:</p>
 
     <pre><code class="language-sql">-- Basic dynamic SQL
 DECLARE table_name STRING DEFAULT 'orders';

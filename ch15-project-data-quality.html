@@ -86,10 +86,16 @@
 
     <h2 id="step1-check">Step 1: Define Quality Checks as Data</h2>
 
-    <pre><code class="language-python">from dataclasses import dataclass
+    <div class="callout info">
+      <div class="callout-title">Catalog Setup</div>
+      <p>This project writes to <code>pipeline_demo.monitoring.dq_results</code>. If you completed Chapter 13, the catalog and schemas already exist. If starting fresh, run the setup cell from Chapter 13 (Step 0) first. The monitoring schema may not exist yet: <code>spark.sql("CREATE SCHEMA IF NOT EXISTS pipeline_demo.monitoring")</code>.</p>
+    </div>
+
+    <pre><code class="language-python">from functools import reduce  # needed for combining check failure flags
+from dataclasses import dataclass
 from typing import List, Optional
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import *
+from pyspark.sql.functions import *  # includes expr(), col(), lit(), current_timestamp()
 
 @dataclass
 class DataQualityCheck:
@@ -143,7 +149,8 @@ ORDER_CHECKS = [
 #   - A row PASSES only if ALL checks pass
 #   - Split into passing_df and failing_df
 #   - Hint: failing condition = any check column is False
-#   - Hint: use functools.reduce with | (bitwise OR) across check failure flags
+#   - Hint: use reduce(lambda a, b: a | b, fail_flags) where fail_flags is a list
+#           of Column expressions like [~col("amount_not_null"), ~col("amount_positive"), ...]
 #
 # TODO 3 — implement _build_fail_reason():
 #   - For each failing row, capture which check(s) failed

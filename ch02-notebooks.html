@@ -56,7 +56,7 @@
     <p>Databricks notebooks look like Jupyter but are fundamentally different. They run on a remote cluster, support multiple languages in the same notebook, share state across cells (and across <code>%run</code> calls), and integrate tightly with the Databricks platform. A few important differences from local Jupyter:</p>
 
     <ul>
-      <li><strong>State is cluster-state, not kernel-state.</strong> Variables persist across cell executions and across notebook sessions attached to the same cluster. Detach/reattach to get a fresh slate.</li>
+      <li><strong>State is cluster-state, not kernel-state.</strong> Variables persist across cell executions and across notebook sessions attached to the same cluster. To get a fresh slate: click the cluster name dropdown at the top right of the notebook and select <strong>Detach &amp; Re-attach</strong>, or choose <em>Clear state &amp; run all</em> from the Run menu.</li>
       <li><strong>Cell outputs are rich.</strong> DataFrames render as interactive tables, plots render inline, and you can build dashboards directly from cell outputs.</li>
       <li><strong>Notebooks are version-controlled.</strong> Each save creates a Git-compatible snapshot. You can connect notebooks directly to a Git repo.</li>
     </ul>
@@ -85,6 +85,8 @@
     <pre><code class="language-python"># %pip installs packages into the current notebook session
 # Place at the top of the notebook before imports
 # COMMAND ----------
+# NOTE: "# COMMAND ----------" is the cell separator used when notebooks are
+# exported as .py files. In the Databricks UI, each cell is a separate block.
 %pip install great-expectations==0.18.0
 
 # COMMAND ----------
@@ -201,9 +203,14 @@ def write_delta_table(df, catalog, schema, table, mode="overwrite"):
 df = read_delta_table("my_catalog", "bronze", "raw_orders")
 write_delta_table(cleaned_df, "my_catalog", "silver", "orders")</code></pre>
 
+    <div class="callout info">
+      <div class="callout-title">Databricks Repos and Python Modules</div>
+      <p><strong>Databricks Repos</strong> lets you connect your workspace to a Git repository (GitHub, GitLab, Azure DevOps) and check out branches directly. Files in a Repo that end in <code>.py</code> are importable as regular Python modules with <code>import</code> or <code>from ... import</code> — the standard Python way. This is the preferred approach for serious production code. Navigate to the Repos section in the left sidebar to set up your first repo.</p>
+    </div>
+
     <div class="callout warning">
       <div class="callout-title">%run Gotchas</div>
-      <p><strong>No imports:</strong> <code>%run</code> re-executes the entire notebook every time, including any expensive setup code. For large shared utilities, consider Databricks Repos with proper Python modules (<code>.py</code> files) instead. <strong>Variable collision:</strong> variables in the target notebook overwrite same-named variables in the caller. Name your utility variables carefully (underscore prefix or module-style namespacing).</p>
+      <p><strong>Re-execution cost:</strong> <code>%run</code> re-executes the entire notebook every time, including any expensive setup code. For large shared utilities, use Databricks Repos with proper Python modules (<code>.py</code> files) and import them instead. <strong>Variable collision:</strong> variables in the target notebook overwrite same-named variables in the caller. Name your utility variables carefully (underscore prefix or module-style namespacing).</p>
     </div>
 
     <h2 id="display">display() vs show() vs toPandas()</h2>
@@ -267,7 +274,7 @@ result = spark.sql("""
 # Result is a DataFrame — continue with PySpark API
 result.filter(F.col("order_count") > 5).display()</code></pre>
 
-    <p>The <code>%sql</code> magic is syntactic sugar for <code>spark.sql()</code> &mdash; the result is displayed as a table and also accessible as <code>_sqldf</code> in the next Python cell:</p>
+    <p>The <code>%sql</code> magic is syntactic sugar for <code>spark.sql()</code> &mdash; the result is displayed as a table and also accessible as <code>_sqldf</code> in the next Python cell. <strong>Note:</strong> <code>_sqldf</code> is overwritten every time a <code>%sql</code> cell runs, so assign it to a named variable immediately if you need to use it more than once.</p>
 
     <pre><code class="language-sql">-- %sql cell
 SELECT customer_id, SUM(amount) as total

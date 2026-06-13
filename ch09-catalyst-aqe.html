@@ -56,11 +56,21 @@
     <p>Every SQL query or DataFrame transformation goes through four stages before execution:</p>
 
     <ol>
-      <li><strong>Parsing</strong> &mdash; SQL text → unresolved logical plan (AST)</li>
-      <li><strong>Analysis</strong> &mdash; resolve table names, column names, types → analyzed logical plan</li>
-      <li><strong>Logical Optimization</strong> &mdash; apply rule-based transformations → optimized logical plan</li>
-      <li><strong>Physical Planning</strong> &mdash; choose physical operators, cost-based join strategies → physical plan</li>
+      <li><strong>Parsing</strong> &mdash; SQL text → unresolved logical plan (AST — Abstract Syntax Tree, a tree representation of your query's structure where table and column names are not yet validated against the catalog)</li>
+      <li><strong>Analysis</strong> &mdash; resolve table names, column names, types against the catalog → analyzed logical plan</li>
+      <li><strong>Logical Optimization</strong> &mdash; apply rule-based transformations (predicate pushdown, column pruning, constant folding) → optimized logical plan</li>
+      <li><strong>Physical Planning</strong> &mdash; choose physical operators (which join algorithm?), cost-based join strategy selection → physical plan</li>
     </ol>
+
+    <pre><code>SQL text or DataFrame API
+        ↓  Parsing
+Unresolved Logical Plan (AST — table/column names not yet resolved)
+        ↓  Analysis (catalog lookup)
+Analyzed Logical Plan (types and names resolved)
+        ↓  Rule-Based Optimization (predicate pushdown, column pruning, etc.)
+Optimized Logical Plan
+        ↓  Physical Planning (join strategies, exchange placement)
+Physical Plan → Execution (Spark tasks on executors)</code></pre>
 
     <p>You can see all four in <code>EXPLAIN EXTENDED</code>:</p>
 

@@ -118,7 +118,7 @@ WHERE event_date = '2024-01-15'
 
     <h2 id="zorder">Z-Order Clustering</h2>
 
-    <p>Z-Order co-locates related data within files based on multiple columns. Unlike partitioning (which creates separate directories), Z-Order works at the file level using a space-filling curve to minimize the number of files that need to be read for multi-column filters:</p>
+    <p>Z-Order co-locates related data within files based on multiple columns. Unlike partitioning (which creates separate directories), Z-Order works at the file level using a <em>space-filling curve</em> &mdash; a mathematical technique that maps multi-dimensional coordinates (multiple column values) into a single sequence while preserving locality. Rows with similar values in <em>any</em> of the Z-ordered columns end up physically close together in the same files. This lets Delta's min/max statistics efficiently skip files even for multi-column filters, because related data is not scattered randomly across thousands of files.</p>
 
     <pre><code class="language-sql">-- Apply Z-Order when running OPTIMIZE
 OPTIMIZE catalog.silver.orders
@@ -204,6 +204,8 @@ OPTIMIZE catalog.silver.orders;  -- automatically applies Liquid Clustering for 
     <h2 id="file-size">File Size Tuning</h2>
 
     <pre><code class="language-sql">-- Check current file sizes and counts
+-- DESCRIBE HISTORY returns an 'operationMetrics' column of type MAP<STRING,STRING>
+-- Access individual metrics with dot notation or map subscript ['key']
 SELECT
     operation,
     operationMetrics.numOutputRows AS rows_written,

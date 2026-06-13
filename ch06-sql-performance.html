@@ -53,7 +53,7 @@
 
     <h2 id="explain">EXPLAIN: Reading Query Plans</h2>
 
-    <p>Before optimizing anything, read the plan. <code>EXPLAIN</code> shows what Spark intends to do with your query:</p>
+    <p>Before optimizing anything, read the plan. <code>EXPLAIN</code> shows what Spark intends to do with your query. <strong>Start with <code>EXPLAIN FORMATTED</code></strong> &mdash; it's the most readable format for day-to-day debugging. Use <code>EXPLAIN EXTENDED</code> when you want to compare what you wrote to what Catalyst rewrote. Use <code>EXPLAIN COST</code> when you want to see Spark's row-count and size estimates for each operator (useful for diagnosing why the optimizer made a bad join decision).</p>
 
     <pre><code class="language-sql">-- Show the optimized logical plan (most useful for SQL)
 EXPLAIN FORMATTED SELECT * FROM orders WHERE customer_id = 'C001';
@@ -211,7 +211,7 @@ df_customers.unpersist()</code></pre>
 
     <div class="callout warning">
       <div class="callout-title">Caching vs Delta Caching</div>
-      <p>Databricks has <strong>two distinct caches</strong>. (1) <strong>Spark cache</strong> (<code>df.cache()</code>, <code>CACHE TABLE</code>): caches deserialized data in executor memory/disk. Lost when cluster is restarted. (2) <strong>Delta cache</strong> (automatic on I3/I3en instances): caches raw Parquet data on local SSD on each worker node. Persists across queries and notebook sessions. The Delta cache is usually better for large tables you query repeatedly. The Spark cache is better for DataFrames you reference multiple times in a single job.</p>
+      <p>Databricks has <strong>two distinct caches</strong>. (1) <strong>Spark cache</strong> (<code>df.cache()</code>, <code>CACHE TABLE</code>): caches deserialized data in executor memory/disk. Lost when cluster is restarted. (2) <strong>Delta cache</strong> (automatic on I3/I3en instances): I3 and I3en are AWS EC2 instance families with local NVMe SSD storage. Databricks uses that local SSD to cache raw Parquet file data, so subsequent reads hit local disk instead of S3. This cache persists across queries and notebook sessions. The Delta cache is usually better for large tables you query repeatedly. The Spark cache is better for DataFrames you reference multiple times in a single job.</p>
     </div>
 
     <h2 id="anti-patterns">Common SQL Anti-Patterns</h2>

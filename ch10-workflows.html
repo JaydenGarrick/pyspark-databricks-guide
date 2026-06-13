@@ -84,7 +84,7 @@
 
     <div class="callout info">
       <div class="callout-title">Notebook vs Python Script for Production</div>
-      <p>Notebooks are convenient but have limitations: they can't be unit-tested with standard Python tools, they're harder to code-review in Git (JSON format with output), and they mix code with display output. For serious production pipelines, consider migrating notebook logic to Python wheel packages. Databricks Asset Bundles (DABs) make this workflow manageable: keep notebooks for exploration, ship production code as packages.</p>
+      <p>Notebooks are convenient but have limitations: they can't be unit-tested with standard Python tools, they're harder to code-review in Git (JSON format with output), and they mix code with display output. For serious production pipelines, consider migrating notebook logic to Python wheel packages. <strong>Databricks Asset Bundles (DABs)</strong> is Databricks' infrastructure-as-code framework: you define jobs, clusters, permissions, and notebooks in YAML files in your Git repo and deploy them with the <code>databricks bundle deploy</code> CLI command. DABs make this workflow manageable &mdash; keep notebooks for exploration, define production job configs in code.</p>
     </div>
 
     <h2 id="task-dag">Task Dependencies</h2>
@@ -139,7 +139,7 @@
           "spark.sql.adaptive.enabled": "true",
           "spark.databricks.delta.optimizeWrite.enabled": "true"
         },
-        "auto_termination_minutes": 0
+        "auto_termination_minutes": 0  // Job clusters terminate when the job finishes — not via idle timeout
       }
     }
   ]
@@ -231,6 +231,11 @@ except Exception as e:
     "pause_status": "UNPAUSED"
   }
 }</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Quartz Cron vs Standard Unix Cron</div>
+      <p>Databricks uses <strong>Quartz cron format</strong>, which has <strong>6 fields</strong> (seconds minutes hours day-of-month month day-of-week), not the 5-field Unix cron you may know. The <code>?</code> wildcard means "no specific value" and is used when you've specified day-of-month OR day-of-week but not both (they conflict). If you're used to <code>0 6 * * *</code> in Unix cron, the Quartz equivalent is <code>0 0 6 * * ?</code>. The Databricks Jobs UI includes a cron builder that generates the correct format for you.</p>
+    </div>
 
     <p>Common cron expressions:</p>
     <ul>

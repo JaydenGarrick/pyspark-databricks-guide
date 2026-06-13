@@ -85,6 +85,23 @@
       <p>You've probably written ETL as: read → transform → overwrite. The medallion pattern replaces that overwrite with MERGE. This makes the pipeline idempotent: running it twice on the same input produces the same result. It also enables easy reprocessing: drop the Bronze rows for a bad date range and re-run &mdash; Silver and Gold self-correct on the next run.</p>
     </div>
 
+    <h2 id="step0-setup">Step 0: Create the Catalog and Schemas</h2>
+
+    <p>Before anything else, create the catalog and schemas the pipeline uses. Run this once in a notebook cell:</p>
+
+    <pre><code class="language-python"># Create catalog and schemas (run once before the pipeline)
+spark.sql("CREATE CATALOG IF NOT EXISTS pipeline_demo")
+spark.sql("CREATE SCHEMA IF NOT EXISTS pipeline_demo.bronze")
+spark.sql("CREATE SCHEMA IF NOT EXISTS pipeline_demo.silver")
+spark.sql("CREATE SCHEMA IF NOT EXISTS pipeline_demo.gold")
+spark.sql("CREATE SCHEMA IF NOT EXISTS pipeline_demo.monitoring")
+print("Catalog and schemas ready.")</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Unity Catalog Required</div>
+      <p>This project uses the three-level namespace (<code>catalog.schema.table</code>), which requires Unity Catalog. If your workspace uses the legacy Hive metastore, use a two-level name instead: replace <code>pipeline_demo.bronze.orders_raw</code> with <code>bronze.orders_raw</code> and create the schemas with <code>CREATE DATABASE IF NOT EXISTS bronze</code>.</p>
+    </div>
+
     <h2 id="step1-setup">Step 1: Schema Definitions and Sample Data</h2>
 
     <p>The starter file provides these for you. Understand them before implementing anything:</p>
@@ -221,9 +238,13 @@ silver_table.alias("target").merge(
 
     <pre><code class="language-python"># Validation queries
 print("=== Layer Row Counts ===")
-spark.sql("SELECT 'bronze' as layer, COUNT(*) as cnt FROM pipeline_demo.bronze.orders_raw UNION ALL"
-          "SELECT 'silver', COUNT(*) FROM pipeline_demo.silver.orders UNION ALL"
-          "SELECT 'gold',   COUNT(*) FROM pipeline_demo.gold.revenue_daily").display()
+spark.sql("""
+    SELECT 'bronze' AS layer, COUNT(*) AS cnt FROM pipeline_demo.bronze.orders_raw
+    UNION ALL
+    SELECT 'silver', COUNT(*) FROM pipeline_demo.silver.orders
+    UNION ALL
+    SELECT 'gold',   COUNT(*) FROM pipeline_demo.gold.revenue_daily
+""").display()
 
 print("\n=== Null Check (Silver) ===")
 spark.sql("""

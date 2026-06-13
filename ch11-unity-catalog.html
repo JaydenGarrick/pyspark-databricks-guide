@@ -51,6 +51,11 @@
       <p class="chapter-subtitle">The three-level namespace, data governance, grants, row-level security, and lineage. Unity Catalog is the biggest platform change in Databricks in years.</p>
     </div>
 
+    <div class="callout info">
+      <div class="callout-title">Account, Workspace, and Metastore</div>
+      <p>Three concepts to keep straight: a <strong>Databricks account</strong> is your top-level organizational entity (one per company, billing lives here). A <strong>workspace</strong> is a collaborative environment within an account (you might have prod-workspace, staging-workspace, dev-workspace). A <strong>Unity Catalog metastore</strong> is a single governance layer that can be attached to multiple workspaces in the same account &mdash; so one set of catalogs, schemas, and grants applies across all workspaces. You typically have one metastore per region. Unity Catalog replaces the legacy per-workspace Hive metastore.</p>
+    </div>
+
     <h2 id="namespace">The Three-Level Namespace</h2>
 
     <p>Before Unity Catalog, Databricks used a two-level namespace: <code>schema.table</code> (or <code>database.table</code>). Unity Catalog adds a top-level <code>catalog</code>:</p>
@@ -115,12 +120,27 @@ REVOKE SELECT ON TABLE prod_catalog.bronze.orders FROM `analyst-team`;</code></p
 
     <p>Row filters restrict which rows a user can see without changing the query. They're applied transparently whenever the table is queried:</p>
 
-    <pre><code class="language-sql">-- Create a function that filters based on current_user()
+    <pre><code class="language-sql">-- IS_ACCOUNT_GROUP_MEMBER() is a Unity Catalog built-in function that returns TRUE
+-- if the current user is a member of the specified account-level group.
+
+-- Store user → region mappings in a lookup table
+CREATE TABLE prod_catalog.security.user_regions (
+    email  STRING,
+    region STRING
+);
+INSERT INTO prod_catalog.security.user_regions VALUES
+    ('alice@company.com', 'US'),
+    ('bob@company.com',   'EU');
+
+-- Create a function that filters based on the lookup table
 CREATE FUNCTION prod_catalog.security.orders_region_filter(region_col STRING)
 RETURN IF(
     IS_ACCOUNT_GROUP_MEMBER('global-data-team'),
     true,
-    region_col = current_user_region()  -- custom function that returns user's region
+    region_col = (
+        SELECT region FROM prod_catalog.security.user_regions
+        WHERE email = current_user()
+    )
 );
 
 -- Apply the row filter to a table

@@ -144,15 +144,20 @@ spark.sql("""
 
     <pre><code class="language-python">import pyspark.sql.functions as F
 
-N_BUCKETS = 10  # number of salt values
+N_BUCKETS = 10  # number of salt values — each hot key becomes 10 sub-keys
 
-# Salt the large (skewed) side
+# Step 1: Salt the LARGE (skewed) side with a random bucket 0..9
+# (F.rand() * N_BUCKETS).cast("int") gives a random int in [0, N_BUCKETS-1]
 orders_salted = orders.withColumn(
     "salted_customer_id",
     F.concat(F.col("customer_id"), F.lit("_"), (F.rand() * N_BUCKETS).cast("int").cast("string"))
 )
 
-# Explode the small side to match all possible salt values
+# Step 2: Explode the SMALL side to match all possible salt values
+# We crossJoin customers with [0, 1, 2, ..., N_BUCKETS-1] so each customer gets N_BUCKETS rows
+# (one per possible bucket). This is necessary because an order with salt "_3" must join
+# to the customer row that also has salt "_3" — the small side needs to be in every bucket.
+# crossJoin on a tiny table (customers) is cheap even if it increases its size N times.
 customers_exploded = customers \
     .crossJoin(spark.range(N_BUCKETS).select(F.col("id").cast("string").alias("salt"))) \
     .withColumn(
@@ -160,7 +165,7 @@ customers_exploded = customers \
         F.concat(F.col("customer_id"), F.lit("_"), F.col("salt"))
     )
 
-# Join on the salted key
+# Step 3: Join on the salted key — hot key "C001" is now spread across 10 sub-keys
 result = orders_salted.join(
     customers_exploded.drop("salt"),
     on="salted_customer_id",
