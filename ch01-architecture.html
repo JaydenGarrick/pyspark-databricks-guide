@@ -252,11 +252,21 @@ df = spark.read.parquet("/Volumes/catalog/schema/volume/data/")</code></pre>
       </div>
     </div>
 
+    <div class="callout success">
+      <div class="callout-title">Getting Sample Data for the Exercises</div>
+      <p>Every Databricks workspace ships with built-in sample datasets — no setup needed. In a notebook cell, run:</p>
+      <pre><code class="language-python">diamonds = spark.read.csv("/databricks-datasets/diamonds/diamonds.csv",
+                          header=True, inferSchema=True)
+diamonds.printSchema()
+diamonds.show(5)</code></pre>
+      <p>Other useful built-in datasets: <code>/databricks-datasets/nyctaxi/</code> (NYC taxi trips, ~1.5GB), <code>/databricks-datasets/retail-org/</code> (retail orders), <code>/databricks-datasets/wikipedia-datasets/</code>. Browse all of them: <code>display(dbutils.fs.ls("/databricks-datasets/"))</code></p>
+    </div>
+
     <div class="exercise">
       <div class="exercise-title">Exercises</div>
       <ol>
         <li><strong>Identify your cluster type.</strong> In your Databricks workspace, open the Compute tab. For each cluster listed, determine whether it's an all-purpose, job (attached to a job), or SQL warehouse cluster. Check when each was last used and whether auto-termination is configured.</li>
-        <li><strong>Read the Spark UI.</strong> Run a simple <code>df.groupBy("some_col").count().show()</code> on a real DataFrame. Open the Spark UI and identify: how many stages did it create? Was there a shuffle? How many tasks ran per stage?</li>
+        <li><strong>Read the Spark UI.</strong> Load the diamonds dataset (see callout above) and run <code>diamonds.groupBy("cut").count().show()</code>. Open the Spark UI (cluster detail → Spark UI) and identify: how many stages did it create? Was there a shuffle? How many tasks ran per stage?</li>
         <li><strong>Driver vs executor exercise.</strong> Run both approaches below and compare timing with <code>%%timeit</code>. The loop approach calls Spark 1,000 times (one <code>union</code> per row, all on the driver). The batch approach makes one Spark call. Why is the loop slower even on the same hardware?
           <pre><code class="language-python"># Loop approach: 1,000 driver-side Spark calls
 from pyspark.sql import Row
