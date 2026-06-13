@@ -162,8 +162,14 @@ env = dbutils.widgets.get("environment")
 date = dbutils.widgets.get("table_date")
 fmt = dbutils.widgets.get("output_format")
 regions = dbutils.widgets.get("regions").split(",")  # multiselect returns CSV string
+# Example: if user selects US and EU, .get() returns "US,EU" — always .split(",") it
 
 print(f"Running for env={env}, date={date}, regions={regions}")</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">Multiselect Always Returns a String</div>
+      <p><code>dbutils.widgets.multiselect</code> returns a <strong>comma-separated string</strong>, not a list. If the user selects US and EU, <code>dbutils.widgets.get("regions")</code> returns <code>"US,EU"</code>. Always call <code>.split(",")</code> on it before iterating. If you pass this as a job parameter, the same rule applies: the parameter value is <code>"US,EU"</code> and must be split in the notebook.</p>
+    </div>
 
     <div class="callout info">
       <div class="callout-title">Widgets in Production Jobs</div>

@@ -86,6 +86,19 @@ df.explain("cost")        # same as EXPLAIN COST</code></pre>
       </tbody>
     </table>
 
+    <p>Annotated example of a physical plan for <code>SELECT * FROM orders WHERE customer_id = 'C001'</code>:</p>
+
+    <pre><code class="language-sql">== Physical Plan ==
+*(1) Project [order_id#10, customer_id#11, amount#12]     &lt;-- Project: column selection
++- *(1) Filter (isnotnull(customer_id#11)                 &lt;-- Filter: WHERE clause
+        AND (customer_id#11 = C001))
+   +- *(1) FileScan delta default.orders                  &lt;-- FileScan: reading files
+           [order_id#10, customer_id#11, amount#12]
+           Batched: true, DataFilters: [isnotnull(...)]
+           PushedFilters: [IsNotNull(customer_id),        &lt;-- Good: pushed to storage
+                           EqualTo(customer_id,C001)]
+           ReadSchema: struct&lt;order_id:string,...&gt;</code></pre>
+
     <h3 id="pushdown">Predicate Pushdown</h3>
 
     <p>Predicate pushdown means filters are applied at the file/storage level, not after reading all data into memory. Look for <code>PushedFilters</code> in the <code>FileScan</code> node:</p>
@@ -196,7 +209,9 @@ CACHE LAZY TABLE catalog.silver.customers;
 UNCACHE TABLE catalog.silver.customers;
 
 -- Check what's cached
-SELECT * FROM sys.caches;  -- Databricks-specific</code></pre>
+-- sys.caches is a Databricks-specific system view; returns one row per cached table/DataFrame
+-- with columns: name, data_type (SPARK vs DELTA), sizeInBytes, numPartitions, isLazy
+SELECT * FROM sys.caches;</code></pre>
 
     <pre><code class="language-python"># Cache a DataFrame
 df_customers = spark.table("catalog.silver.customers").cache()

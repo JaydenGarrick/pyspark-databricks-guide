@@ -124,7 +124,7 @@ GROUP BY customer_id;
     <pre><code class="language-sql">-- Catalyst evaluates these at plan time, not per row:
 WHERE 1 + 1 = 2           -- becomes TRUE (whole table)
 WHERE amount * 1.0 > 100  -- simplifies to amount > 100.0
-WHERE amount BETWEEN 0 AND 1000  -- becomes amount >= 0 AND amount <= 1000</code></pre>
+WHERE amount BETWEEN 0 AND 1000  -- becomes amount &gt;= 0 AND amount &lt;= 1000</code></pre>
 
     <h2 id="aqe">Adaptive Query Execution (AQE)</h2>
 
@@ -179,6 +179,17 @@ spark.conf.set("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "2
     </div>
 
     <h2 id="config-knobs">Key Configuration Knobs</h2>
+
+    <div class="callout info">
+      <div class="callout-title">Three Ways to Set Spark Config &mdash; When to Use Each</div>
+      <p>You'll see configs set three different ways throughout this guide:</p>
+      <ul>
+        <li><strong><code>spark.conf.set("key", "value")</code></strong> &mdash; Python/PySpark, session-scoped. Only affects the current SparkSession (your notebook or job run). Reset on cluster restart. Use this in notebooks for per-query tuning.</li>
+        <li><strong><code>SET key = value;</code></strong> &mdash; SQL, session-scoped. Equivalent to <code>spark.conf.set()</code> but in a <code>%sql</code> cell. Same scope, same lifetime.</li>
+        <li><strong>Cluster JSON config</strong> (Spark Config field in the cluster UI) &mdash; Cluster-scoped. Applies to every session on that cluster, persists across restarts. Use this for permanent cluster-wide defaults (like enabling Photon or setting default shuffle partitions for a team's cluster). Set via Cluster UI → Advanced Options → Spark Config.</li>
+      </ul>
+      <p>Rule of thumb: query-level tuning → <code>spark.conf.set()</code>; team/cluster-wide defaults → cluster JSON config.</p>
+    </div>
 
     <table>
       <thead>

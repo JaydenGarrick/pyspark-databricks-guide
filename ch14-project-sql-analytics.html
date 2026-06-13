@@ -219,6 +219,10 @@ ORDER BY customer_id</code></pre>
     <pre><code class="language-sql">-- TODO 6: Pivot revenue by product category into columns
 -- Join orders to products to get category.
 -- Expected: month | electronics | apparel | home_goods | sports (each as a column)
+--
+-- Before writing the PIVOT IN clause, run this to see the exact category strings:
+--   SELECT DISTINCT category FROM products ORDER BY category;
+-- PIVOT IN values must match the actual data exactly (case-sensitive).
 
 SELECT *
 FROM (
@@ -252,7 +256,13 @@ cohort_df.explain("formatted")</code></pre>
     <pre><code class="language-python"># TODO 8: Tune the cohort query.
 # If the customers table is small (&lt;10MB), add a BROADCAST hint.
 # Re-run EXPLAIN FORMATTED and confirm BroadcastHashJoin appears.
-# Record execution time before and after — how much did it improve?</code></pre>
+# To measure execution time before and after:
+import time
+start = time.monotonic()
+cohort_df.count()   # .count() forces full execution; display() does too
+elapsed = time.monotonic() - start
+print(f"Elapsed: {elapsed:.2f}s")
+# Run this block before and after adding the BROADCAST hint to see the delta.</code></pre>
 
     <div class="exercise">
       <div class="exercise-title">Extension Challenges</div>

@@ -344,18 +344,18 @@ changes.filter("_change_type IN ('insert', 'update_postimage')").display()</code
       </ul>
     </div>
 
-    <div class="quiz" data-correct="1">
+    <div class="quiz" data-correct="2">
       <div class="quiz-title">Quick Check</div>
-      <p class="quiz-question">You run <code>VACUUM catalog.silver.orders RETAIN 0 HOURS</code>. What happens to time travel?</p>
+      <p class="quiz-question">You run <code>VACUUM catalog.silver.orders RETAIN 0 HOURS</code>. What happens?</p>
       <ul class="quiz-options">
         <li>Time travel still works for versions created today</li>
-        <li>All historical Parquet files are deleted; you can no longer time-travel to any prior version</li>
-        <li>VACUUM fails because the minimum retention is 24 hours</li>
+        <li>All historical Parquet files are deleted; you lose all time travel capability</li>
+        <li>The command throws an error — the retention safety check enforces a minimum of 168 hours (7 days)</li>
         <li>Time travel works but only for the current version</li>
       </ul>
       <button class="quiz-btn">Check Answer</button>
       <div class="quiz-answer">
-        <strong>All historical files are deleted.</strong> <code>RETAIN 0 HOURS</code> removes all files not referenced by the current table version. You lose all time travel capability for this table. Databricks normally prevents this with a safety check (<code>spark.databricks.delta.retentionDurationCheck.enabled</code>), but if overridden, it's permanent. The minimum enforced by the safety check is 168 hours (7 days).
+        <strong>It throws an error by default.</strong> Databricks enables <code>spark.databricks.delta.retentionDurationCheck.enabled = true</code> out of the box, which rejects any retention period below 168 hours (7 days). You'd see: <em>"requirement failed: Retention period ... is less than the minimum retention period"</em>. To override: <code>SET spark.databricks.delta.retentionDurationCheck.enabled = false</code> — but then all historical files are permanently deleted and time travel is gone. Never do this on a production table without intent.
       </div>
     </div>
 

@@ -76,7 +76,7 @@
 SELECT o.*, c.email, c.country
 FROM orders o
 JOIN customers c ON o.customer_id = c.customer_id;
--- If customers < 10MB, Spark auto-broadcasts it
+-- If customers &lt; 10MB, Spark auto-broadcasts it
 
 -- Manual hint: force broadcast even above threshold
 SELECT /*+ BROADCAST(c) */ o.*, c.email
@@ -143,6 +143,8 @@ spark.sql("""
     <p>Salting artificially increases cardinality of the hot key by adding a random suffix. This distributes the skewed key across N sub-keys, each processed by a different executor:</p>
 
     <pre><code class="language-python">import pyspark.sql.functions as F
+# spark.range(n) creates a DataFrame with a single "id" column: 0, 1, 2, ..., n-1
+# It's the fastest way to generate a sequence of integers in Spark (no Python loop overhead)
 
 N_BUCKETS = 10  # number of salt values — each hot key becomes 10 sub-keys
 

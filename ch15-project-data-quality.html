@@ -91,13 +91,13 @@
       <p>This project writes to <code>pipeline_demo.monitoring.dq_results</code>. If you completed Chapter 13, the catalog and schemas already exist. If starting fresh, run the setup cell from Chapter 13 (Step 0) first. The monitoring schema may not exist yet: <code>spark.sql("CREATE SCHEMA IF NOT EXISTS pipeline_demo.monitoring")</code>.</p>
     </div>
 
-    <pre><code class="language-python">from functools import reduce  # needed for combining check failure flags
+    <pre><code class="language-python">from functools import reduce  # reduce(fn, [a, b, c]) = fn(fn(a, b), c) — collapses a list to a single value
 from dataclasses import dataclass
 from typing import List, Optional
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import *  # includes expr(), col(), lit(), current_timestamp()
 
-@dataclass
+@dataclass  # generates __init__, __repr__, __eq__ from the fields below — no boilerplate needed
 class DataQualityCheck:
     name: str
     expression: str       # SQL expression returning boolean — True = PASS
@@ -126,7 +126,7 @@ ORDER_CHECKS = [
     ),
     DataQualityCheck(
         name="order_date_not_future",
-        expression="order_date <= current_date()",
+        expression="order_date &lt;= current_date()",
         severity="WARNING",
         description="Order date should not be in the future"
     ),
@@ -138,6 +138,12 @@ ORDER_CHECKS = [
     ),
 ]</code></pre>
 
+    <div class="callout info">
+      <div class="callout-title">Two Functions You'll Use Throughout This Step</div>
+      <p><strong><code>expr(sql_string)</code></strong> — from <code>pyspark.sql.functions</code>. Converts a SQL expression string into a PySpark Column object. <code>expr("amount &gt; 0")</code> is equivalent to <code>col("amount") &gt; 0</code> but lets you store the expression as a plain string (which is what <code>DataQualityCheck.expression</code> does).</p>
+      <p><strong><code>|</code> on Column objects</strong> — PySpark overloads the bitwise OR operator (<code>|</code>) to mean logical OR between two Column expressions. So <code>col_a | col_b</code> produces a Column that is True if either is True. Used here to combine multiple failure flags: <code>reduce(lambda a, b: a | b, fail_flags)</code> ORs them all together.</p>
+    </div>
+
     <h2 id="step2-runner">Step 2: The DataQualityRunner</h2>
 
     <pre><code class="language-python"># TODO 1 — implement in starter
@@ -146,11 +152,13 @@ ORDER_CHECKS = [
 #
 # TODO 2 — implement run() method:
 #   - For each check, add a boolean column via df.withColumn(check.name, expr(check.expression))
+#     expr() converts the SQL string "amount > 0" into a Column — this is how checks stay data-driven
 #   - A row PASSES only if ALL checks pass
 #   - Split into passing_df and failing_df
 #   - Hint: failing condition = any check column is False
 #   - Hint: use reduce(lambda a, b: a | b, fail_flags) where fail_flags is a list
 #           of Column expressions like [~col("amount_not_null"), ~col("amount_positive"), ...]
+#           The | operator between two Columns means logical OR (not bitwise)
 #
 # TODO 3 — implement _build_fail_reason():
 #   - For each failing row, capture which check(s) failed
@@ -179,7 +187,16 @@ ORDER_CHECKS = [
 
 # TODO 6 — implement quality_score():
 # Return overall quality score for the run: pass_count / total_rows * 100
-# Weighted: ERROR checks count double vs WARNING checks</code></pre>
+# Weighted: ERROR checks count double vs WARNING checks
+#
+# Formula:
+#   weight = 2 if check.severity == "ERROR" else 1
+#   weighted_pass  = sum(weight * row["pass_count"]  for each check in run_summary)
+#   weighted_total = sum(weight * row["total_rows"]   for each check in run_summary)
+#   score = weighted_pass / weighted_total * 100
+#
+# A run with one ERROR check failing scores lower than one with only WARNING failures,
+# because ERROR checks carry 2x the weight in the denominator.</code></pre>
 
     <h2 id="step4-use">Step 4: Using the Framework</h2>
 

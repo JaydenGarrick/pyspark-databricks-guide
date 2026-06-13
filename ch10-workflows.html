@@ -158,6 +158,11 @@
 
     <p>Parameters pass values into notebooks as widget values or Python script args. Task values pass outputs from one task to another:</p>
 
+    <div class="callout warning">
+      <div class="callout-title">taskValues Only Work Inside a Job</div>
+      <p><code>dbutils.jobs.taskValues.set()</code> and <code>dbutils.jobs.taskValues.get()</code> only work when the notebook is running as a <strong>task inside a Databricks Job</strong>. In an interactive notebook session, these calls will throw an error. Design and test your task value logic with the Job UI, not by running cells manually.</p>
+    </div>
+
     <pre><code class="language-python"># In the upstream task (bronze ingestion)
 # After processing, record how many rows were ingested
 rows_ingested = df_bronze.count()
@@ -183,7 +188,9 @@ print(f"Processing {rows_ingested} rows for {run_date}")
 # Conditional logic based on upstream result
 if rows_ingested == 0:
     print("No data to process — skipping silver transform")
-    dbutils.notebook.exit("SKIPPED")</code></pre>
+    dbutils.notebook.exit("SKIPPED")  # marks the task as SUCCEEDED with exit value "SKIPPED"
+    # Note: dbutils.notebook.exit() does NOT fail the task — it exits cleanly.
+    # To fail a task deliberately, raise an Exception instead.</code></pre>
 
     <h2 id="error-handling">Error Handling and Retries</h2>
 

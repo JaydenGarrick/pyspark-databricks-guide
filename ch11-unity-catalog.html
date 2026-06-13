@@ -120,8 +120,10 @@ REVOKE SELECT ON TABLE prod_catalog.bronze.orders FROM `analyst-team`;</code></p
 
     <p>Row filters restrict which rows a user can see without changing the query. They're applied transparently whenever the table is queried:</p>
 
-    <pre><code class="language-sql">-- IS_ACCOUNT_GROUP_MEMBER() is a Unity Catalog built-in function that returns TRUE
--- if the current user is a member of the specified account-level group.
+    <pre><code class="language-sql">-- IS_ACCOUNT_GROUP_MEMBER() is a Unity Catalog built-in that returns TRUE
+-- if the current querying user is a member of the specified account-level group.
+-- current_user() is a Spark SQL built-in that returns the email of the querying user.
+-- Unity Catalog injects this at query time — the user cannot override or spoof it.
 
 -- Store user → region mappings in a lookup table
 CREATE TABLE prod_catalog.security.user_regions (
@@ -201,6 +203,11 @@ df.write.format("json").save("/Volumes/prod_catalog/bronze/raw_files/processed/"
 
     <p>Unity Catalog automatically tracks lineage: which tables were read/written by which queries and jobs. Access via the Catalog Explorer or programmatically:</p>
 
+    <div class="callout info">
+      <div class="callout-title">Installing the Databricks SDK</div>
+      <p>The Databricks Python SDK is not pre-installed on all runtimes. Install it with <code>%pip install databricks-sdk</code> in a notebook cell (runs on cluster) or <code>pip install databricks-sdk</code> locally. On Databricks Runtime 13.1+, it's pre-installed. Authentication is automatic when running inside a Databricks notebook &mdash; the SDK picks up your workspace token from the cluster environment.</p>
+    </div>
+
     <pre><code class="language-python"># Lineage is available in the Catalog Explorer UI
 # Programmatic access via the Databricks SDK
 from databricks.sdk import WorkspaceClient
@@ -222,7 +229,7 @@ for upstream in lineage.upstreams:
     <div class="exercise">
       <div class="exercise-title">Exercises</div>
       <ol>
-        <li><strong>Namespace migration.</strong> If you have any tables in the legacy Hive metastore (<code>database.table</code>), write a migration plan to move them to Unity Catalog. What's the <code>SYNC</code> command? What needs to change in your notebook paths?</li>
+        <li><strong>Namespace migration.</strong> If you have any tables in the legacy Hive metastore (<code>database.table</code>), write a migration plan to move them to Unity Catalog. The <code>SYNC</code> command copies table metadata from the Hive metastore into a Unity Catalog schema: <code>SYNC SCHEMA hive_metastore.my_db TO my_catalog.my_db DRY RUN;</code> (omit DRY RUN to execute). After SYNC, update notebook paths from <code>my_db.table</code> to <code>my_catalog.my_db.table</code>.</li>
         <li><strong>Design a permission model.</strong> Your team has: data engineers (read/write all layers), analysts (read gold only), external partners (read one specific gold table). Write the GRANT statements to implement this in Unity Catalog.</li>
         <li><strong>Implement a row filter.</strong> Create a table with a <code>country</code> column. Write a row filter function that returns all rows if the user is in a 'global-access' group, otherwise only rows matching a hardcoded test country. Verify it works by querying as different users (or groups).</li>
       </ol>

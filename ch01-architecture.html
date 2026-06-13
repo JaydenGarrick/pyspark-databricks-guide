@@ -74,7 +74,11 @@
 
     <p>The key consequence: <strong>your Python code runs on the driver</strong>. Spark transformations execute on executors. This means Python variables, loops, and logic that aren't inside a Spark operation run on a single machine. Only what's expressed as a Spark operation distributes.</p>
 
-    <pre><code class="language-python"># This loop runs on the DRIVER — not distributed
+    <pre><code class="language-python">import pyspark.sql.functions as F  # standard convention: import the functions module as F
+# F.col(), F.lit(), F.sum(), etc. — all Spark column expressions live here
+# You'll also see "from pyspark.sql.functions import *" in scripts that use many functions
+
+# This loop runs on the DRIVER — not distributed
 for country in ["US", "UK", "DE"]:
     df_country = df.filter(F.col("country") == country)
     # Each filter() call creates a Spark plan, but the loop itself is sequential Python
@@ -179,7 +183,7 @@ df.groupBy("country").count()  # all partitions processed in parallel</code></pr
 
     <div class="callout warning">
       <div class="callout-title">Autoscaling Trade-off</div>
-      <p>Enhanced autoscaling (available on Databricks-specific runtimes) is significantly better than basic autoscaling for this reason. Basic autoscaling can increase job duration because of re-partitioning overhead. For jobs with predictable data volumes, a fixed worker count is often faster and cheaper than autoscaling. Benchmark both for your use case before committing to autoscaling in production.</p>
+      <p><strong>Enhanced autoscaling</strong> (Databricks Runtime Jobs clusters only) solves the re-partitioning problem with cluster-level optimizations: Spark can run efficiently even as worker count changes mid-job, and the cluster scales down more aggressively by removing idle workers faster. <strong>Basic autoscaling</strong> (default on open-source Spark) uses a simple task-queue heuristic and can actually increase job duration — new workers arrive after large shuffles are already planned at lower parallelism. For jobs with predictable data volumes, a fixed worker count is often faster and cheaper than either mode. Enable Enhanced by checking "Enable autoscaling" on a Jobs cluster (it's distinct from the autoscaling on All-Purpose clusters).</p>
     </div>
 
     <h2 id="storage">Storage: DBFS vs External Storage</h2>

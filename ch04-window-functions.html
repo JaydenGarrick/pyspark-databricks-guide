@@ -115,6 +115,9 @@ WHERE rn = 1;
         <div class="lang-label python">PySpark API</div>
         <pre><code class="language-python">from pyspark.sql import Window
 import pyspark.sql.functions as F
+# F is the standard alias for pyspark.sql.functions — the module with col(), lit(),
+# row_number(), sum(), when(), and hundreds of other built-in functions.
+# You'll see `F.col()`, `F.sum()`, etc. throughout PySpark code.
 
 w = Window \
   .partitionBy("customer_id") \

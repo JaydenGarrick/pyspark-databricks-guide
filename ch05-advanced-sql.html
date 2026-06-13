@@ -107,7 +107,7 @@ ORDER BY ltv_segment, customers DESC;</code></pre>
 
     <div class="callout warning">
       <div class="callout-title">CTE Materialization</div>
-      <p>In Spark SQL, CTEs are <strong>not</strong> automatically materialized. If you reference a CTE three times, Spark may re-execute it three times. For expensive CTEs you need multiple times, either: (1) use <code>spark.sql("CREATE OR REPLACE TEMP VIEW my_cte AS ...")</code> to persist it, or (2) cache the intermediate result as a Delta temp table. This is different from some databases (like BigQuery) where CTEs are materialized by default.</p>
+      <p>In Spark SQL, CTEs are <strong>not</strong> automatically materialized. If you reference a CTE three times, Spark may re-execute it three times. For expensive CTEs you need multiple times, either: (1) use <code>spark.sql("CREATE OR REPLACE TEMP VIEW my_cte AS ...")</code> to persist it, or (2) cache the intermediate result as a Delta temp table. Note: some other SQL engines do materialize CTEs automatically; Spark does not.</p>
     </div>
 
     <h2 id="pivot">PIVOT</h2>
@@ -148,7 +148,7 @@ PIVOT (
     <h3 id="array-ops">Array Operations</h3>
 
     <pre><code class="language-sql">-- Sample: orders table with items array
--- items: ARRAY<STRUCT<product_id STRING, qty INT, price DECIMAL>>
+-- items: ARRAY&lt;STRUCT&lt;product_id STRING, qty INT, price DECIMAL&gt;&gt;
 
 -- Size of array
 SELECT order_id, SIZE(items) AS item_count FROM orders;
@@ -230,7 +230,7 @@ FROM raw_events;
 -- Parse to a struct with FROM_JSON
 SELECT
     event_id,
-    FROM_JSON(payload, 'STRUCT<user_id STRING, event_type STRING, amount DECIMAL(10,2)>') AS parsed
+    FROM_JSON(payload, 'STRUCT&lt;user_id STRING, event_type STRING, amount DECIMAL(10,2)&gt;') AS parsed
 FROM raw_events;
 
 -- Then access fields from the parsed struct
@@ -242,7 +242,7 @@ SELECT
 FROM (
     SELECT
         event_id,
-        FROM_JSON(payload, 'STRUCT<user_id STRING, event_type STRING, amount DECIMAL(10,2)>') AS parsed
+        FROM_JSON(payload, 'STRUCT&lt;user_id STRING, event_type STRING, amount DECIMAL(10,2)&gt;') AS parsed
     FROM raw_events
 )
 WHERE parsed.event_type = 'purchase';
