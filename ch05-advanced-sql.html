@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 5: Advanced SQL Patterns | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html" class="active">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 5</div>
+      <h1>Advanced SQL Patterns</h1>
+      <p class="chapter-subtitle">CTEs, PIVOT, array and struct operations, JSON parsing, and EXECUTE IMMEDIATE. The SQL toolkit for complex transformations.</p>
+    </div>
+
+    <h2 id="ctes">CTEs &mdash; Common Table Expressions</h2>
+
+    <p>CTEs give names to subqueries so they can be referenced multiple times. They make complex queries readable by breaking them into named, logical steps:</p>
+
+    <pre><code class="language-sql">WITH
+-- Step 1: Calculate customer lifetime value
+customer_ltv AS (
+    SELECT
+        customer_id,
+        SUM(amount) AS total_spent,
+        COUNT(*) AS order_count,
+        MIN(created_at) AS first_order,
+        MAX(created_at) AS last_order
+    FROM orders
+    WHERE status = 'completed'
+    GROUP BY customer_id
+),
+-- Step 2: Assign LTV segments
+ltv_segments AS (
+    SELECT
+        customer_id,
+        total_spent,
+        order_count,
+        CASE
+            WHEN total_spent >= 1000 THEN 'platinum'
+            WHEN total_spent >= 500  THEN 'gold'
+            WHEN total_spent >= 100  THEN 'silver'
+            ELSE 'bronze'
+        END AS ltv_segment
+    FROM customer_ltv
+),
+-- Step 3: Join to customer profile
+enriched AS (
+    SELECT
+        c.customer_id,
+        c.email,
+        c.country,
+        s.ltv_segment,
+        s.total_spent,
+        s.order_count
+    FROM customers c
+    JOIN ltv_segments s USING (customer_id)
+)
+-- Final SELECT against the last CTE
+SELECT ltv_segment, country, COUNT(*) AS customers, AVG(total_spent) AS avg_ltv
+FROM enriched
+GROUP BY ltv_segment, country
+ORDER BY ltv_segment, customers DESC;</code></pre>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>The PySpark equivalent is chaining <code>.alias()</code> and assigning intermediate DataFrames to variables. CTEs are often cleaner for pure analytics. However, for reusable logic and complex conditional transforms, the DataFrame API gives you Python functions, loops, and types that SQL cannot. Use SQL for query-shaped work, Python for pipeline-shaped work.</p>
+    </div>
+
+    <div class="callout warning">
+      <div class="callout-title">CTE Materialization</div>
+      <p>In Spark SQL, CTEs are <strong>not</strong> automatically materialized. If you reference a CTE three times, Spark may re-execute it three times. For expensive CTEs you need multiple times, either: (1) use <code>spark.sql("CREATE OR REPLACE TEMP VIEW my_cte AS ...")</code> to persist it, or (2) cache the intermediate result as a Delta temp table. This is different from some databases (like BigQuery) where CTEs are materialized by default.</p>
+    </div>
+
+    <h2 id="pivot">PIVOT</h2>
+
+    <p>PIVOT rotates row values into columns &mdash; turning a "tall" table into a "wide" one:</p>
+
+    <pre><code class="language-sql">-- Input: one row per (month, region, revenue)
+-- Output: one row per month, one column per region
+
+SELECT *
+FROM monthly_revenue
+PIVOT (
+    SUM(revenue)            -- aggregate function
+    FOR region              -- column whose values become new column names
+    IN ('US', 'EU', 'APAC') -- the values to pivot into columns
+);
+-- Result columns: month, US, EU, APAC</code></pre>
+
+    <pre><code class="language-sql">-- More complex: pivot with multiple aggregates
+SELECT *
+FROM orders
+PIVOT (
+    SUM(amount)  AS sum_amount,
+    COUNT(*)     AS order_count
+    FOR status
+    IN ('pending' AS pending, 'completed' AS completed, 'cancelled' AS cancelled)
+);</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Dynamic PIVOT in PySpark</div>
+      <p>Spark SQL's PIVOT requires you to know the column values at write time. For dynamic pivots (unknown values), use the PySpark DataFrame API: collect the distinct values first, then build the pivot expression programmatically. <code>df.groupBy("month").pivot("region").sum("revenue")</code> &mdash; the DataFrame API will scan for distinct values automatically, but this adds an extra scan pass.</p>
+    </div>
+
+    <h2 id="arrays-structs">Arrays and Structs</h2>
+
+    <p>Delta tables frequently contain nested data: arrays (lists), structs (objects), and maps. Spark SQL has rich support for working with these types without flattening:</p>
+
+    <h3 id="array-ops">Array Operations</h3>
+
+    <pre><code class="language-sql">-- Sample: orders table with items array
+-- items: ARRAY<STRUCT<product_id STRING, qty INT, price DECIMAL>>
+
+-- Size of array
+SELECT order_id, SIZE(items) AS item_count FROM orders;
+
+-- Check if array contains a value
+SELECT * FROM orders
+WHERE ARRAY_CONTAINS(items.product_id, 'P001');
+
+-- Flatten array elements to rows (EXPLODE)
+SELECT order_id, item.product_id, item.qty, item.price
+FROM orders
+LATERAL VIEW EXPLODE(items) AS item;
+
+-- EXPLODE_OUTER preserves rows with empty arrays (returns NULL instead of dropping)
+SELECT order_id, item.product_id
+FROM orders
+LATERAL VIEW OUTER EXPLODE(items) AS item;
+
+-- Transform array elements (equivalent of map())
+SELECT
+    order_id,
+    TRANSFORM(items, item -> item.price * item.qty) AS line_totals
+FROM orders;
+
+-- Filter array elements
+SELECT
+    order_id,
+    FILTER(items, item -> item.price > 10) AS expensive_items
+FROM orders;
+
+-- Aggregate array
+SELECT
+    order_id,
+    AGGREGATE(items, 0D, (acc, item) -> acc + item.price * item.qty) AS total
+FROM orders;</code></pre>
+
+    <h3 id="struct-ops">Struct Operations</h3>
+
+    <pre><code class="language-sql">-- Access nested struct fields with dot notation
+SELECT
+    order_id,
+    shipping_address.street,
+    shipping_address.city,
+    shipping_address.zip_code
+FROM orders;
+
+-- Reconstruct a struct
+SELECT
+    order_id,
+    STRUCT(
+        shipping_address.city AS city,
+        shipping_address.country AS country
+    ) AS location
+FROM orders;
+
+-- Rename/reorder struct fields
+SELECT
+    order_id,
+    NAMED_STRUCT(
+        'full_city',  CONCAT(shipping_address.city, ', ', shipping_address.state),
+        'zip',        shipping_address.zip_code
+    ) AS location_summary
+FROM orders;</code></pre>
+
+    <h2 id="json">JSON Parsing</h2>
+
+    <p>Raw data often arrives as JSON strings in a column. Spark SQL can parse and query JSON without flattening to a separate table:</p>
+
+    <pre><code class="language-sql">-- Parse a JSON string column
+SELECT
+    event_id,
+    GET_JSON_OBJECT(payload, '$.user.id') AS user_id,
+    GET_JSON_OBJECT(payload, '$.event_type') AS event_type,
+    GET_JSON_OBJECT(payload, '$.metadata.source') AS source
+FROM raw_events;
+
+-- Parse to a struct with FROM_JSON
+SELECT
+    event_id,
+    FROM_JSON(payload, 'STRUCT<user_id STRING, event_type STRING, amount DECIMAL(10,2)>') AS parsed
+FROM raw_events;
+
+-- Then access fields from the parsed struct
+SELECT
+    event_id,
+    parsed.user_id,
+    parsed.event_type,
+    parsed.amount
+FROM (
+    SELECT
+        event_id,
+        FROM_JSON(payload, 'STRUCT<user_id STRING, event_type STRING, amount DECIMAL(10,2)>') AS parsed
+    FROM raw_events
+)
+WHERE parsed.event_type = 'purchase';
+
+-- Convert a struct back to JSON
+SELECT order_id, TO_JSON(shipping_address) AS address_json FROM orders;</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Schema Inference for JSON</div>
+      <p>If you don't know the JSON schema upfront, use PySpark's <code>spark.read.option("inferSchema", "true").json(path)</code> to infer it from a sample, then use the inferred schema in <code>FROM_JSON</code>. For large, variable JSON payloads, store in Delta as a string column and parse at query time using <code>FROM_JSON</code> or <code>GET_JSON_OBJECT</code> &mdash; this is often better than enforcing a rigid schema upfront.</p>
+    </div>
+
+    <h2 id="lateral-view">LATERAL VIEW and INLINE</h2>
+
+    <pre><code class="language-sql">-- LATERAL VIEW EXPLODE: turn array into rows (row-per-element)
+SELECT order_id, tag
+FROM orders
+LATERAL VIEW EXPLODE(tags) tags_table AS tag;
+
+-- LATERAL VIEW EXPLODE with map: turns map into key-value rows
+SELECT order_id, attr_key, attr_value
+FROM orders
+LATERAL VIEW EXPLODE(attributes) attrs AS attr_key, attr_value;
+
+-- INLINE: explode an array of structs into columns
+SELECT order_id, product_id, qty, price
+FROM orders
+LATERAL VIEW INLINE(items) item_table AS product_id, qty, price;
+
+-- POSEXPLODE: like EXPLODE but also returns element position (0-indexed)
+SELECT order_id, pos, tag
+FROM orders
+LATERAL VIEW POSEXPLODE(tags) tags_table AS pos, tag;</code></pre>
+
+    <h2 id="execute-immediate">EXECUTE IMMEDIATE (Dynamic SQL)</h2>
+
+    <p>Available in Databricks Runtime 12.2+, <code>EXECUTE IMMEDIATE</code> runs a SQL string at runtime. This enables parameterized SQL and dynamic table/schema names:</p>
+
+    <pre><code class="language-sql">-- Basic dynamic SQL
+DECLARE table_name STRING DEFAULT 'orders';
+EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM ' || table_name;
+
+-- With parameters (prevents SQL injection)
+DECLARE customer_id_param STRING DEFAULT 'C001';
+EXECUTE IMMEDIATE
+    'SELECT * FROM orders WHERE customer_id = ?'
+    USING customer_id_param;
+
+-- Build and run table creation dynamically
+DECLARE env STRING DEFAULT 'prod';
+EXECUTE IMMEDIATE
+    'CREATE TABLE IF NOT EXISTS ' || env || '.orders_archive
+     USING DELTA AS SELECT * FROM ' || env || '.orders WHERE created_at < current_date() - 365';</code></pre>
+
+    <pre><code class="language-python"># Python equivalent using spark.sql() with string formatting
+# NOTE: be careful with string formatting — use parameterized queries when possible
+env = "prod"
+table_name = dbutils.widgets.get("table_name")
+
+# Safer: use spark.sql() with a prepared statement approach
+spark.sql(f"""
+    SELECT *
+    FROM {env}.{table_name}
+    WHERE event_date = '{date_param}'
+""")
+
+# Even safer: validate inputs first
+allowed_tables = ["orders", "customers", "products"]
+if table_name not in allowed_tables:
+    raise ValueError(f"Invalid table name: {table_name}")
+spark.sql(f"SELECT COUNT(*) FROM {env}.{table_name}")</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">SQL Injection in Dynamic SQL</div>
+      <p>Dynamic SQL with string concatenation is vulnerable to injection. Always validate inputs against an allowlist when building table/column names dynamically. For value parameters, use the <code>USING</code> clause in <code>EXECUTE IMMEDIATE</code> or parameterized <code>spark.sql()</code> calls. Never concatenate raw user input directly into a SQL string without validation.</p>
+    </div>
+
+    <h2 id="set-operations">Set Operations</h2>
+
+    <pre><code class="language-sql">-- UNION ALL: combine all rows from both queries (no dedup)
+SELECT customer_id FROM active_customers
+UNION ALL
+SELECT customer_id FROM churned_customers;
+
+-- UNION (DISTINCT): deduplicate combined result
+SELECT customer_id FROM active_customers
+UNION
+SELECT customer_id FROM churned_customers;
+
+-- INTERSECT: rows in both queries
+SELECT customer_id FROM high_value_customers
+INTERSECT
+SELECT customer_id FROM recent_purchasers;
+
+-- EXCEPT (MINUS): rows in first query but not second
+SELECT customer_id FROM all_customers
+EXCEPT
+SELECT customer_id FROM customers_who_purchased_last_90_days;</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">UNION ALL vs UNION Performance</div>
+      <p><code>UNION ALL</code> is always faster than <code>UNION</code> because UNION adds a deduplication step (essentially a GROUP BY across all columns). Use <code>UNION ALL</code> by default, and only use <code>UNION</code> when deduplication is semantically required. In ETL contexts, <code>UNION ALL</code> is almost always the right choice.</p>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Multi-step CTE pipeline.</strong> Write a query with at least 4 CTEs that: (1) filters raw orders to completed status, (2) calculates per-product revenue, (3) ranks products by revenue within each category, (4) returns only the top 3 products per category. Use QUALIFY in the final CTE instead of a WHERE on the rank column.</li>
+        <li><strong>PIVOT a time-series.</strong> Given daily revenue data with columns <code>event_date, region, revenue</code>, write a PIVOT query that produces one column per month (Jan, Feb, Mar...) showing total revenue by region. How would you handle a dynamic list of months without hardcoding them?</li>
+        <li><strong>JSON parsing pipeline.</strong> Create a table with a string column containing JSON payloads (use INSERT INTO with raw JSON strings). Write a query that parses the JSON, extracts 3 nested fields, and writes the result to a new Delta table. Verify schema enforcement by intentionally sending a malformed JSON string and observe the behavior.</li>
+        <li><strong>Explode and re-aggregate.</strong> Take a table with an <code>items</code> array column (create it with <code>ARRAY(STRUCT(...))</code>). EXPLODE the array to get one row per item. Then aggregate back to the order level calculating total item count and order total. Verify your totals match what you'd expect.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch04-window-functions.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">4. Window Functions &amp; Analytics</span>
+      </a>
+      <a href="ch06-sql-performance.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">6. SQL Performance Patterns</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

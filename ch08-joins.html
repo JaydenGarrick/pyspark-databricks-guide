@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 8: Join Strategies | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html" class="active">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 8</div>
+      <h1>Join Strategies</h1>
+      <p class="chapter-subtitle">Broadcast, sort-merge, shuffle hash, data skew, and salting. Joins are the most common source of performance problems in Spark workloads.</p>
+    </div>
+
+    <h2 id="overview">Join Strategies Overview</h2>
+
+    <p>Spark has several physical join implementations. The optimizer chooses based on table sizes, statistics, and join type. Understanding when each is chosen and why tells you how to optimize a slow join:</p>
+
+    <table>
+      <thead>
+        <tr><th>Strategy</th><th>When Used</th><th>Shuffle Required?</th><th>Best For</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Broadcast Hash Join</strong></td><td>One side &lt; broadcast threshold</td><td>No — small side broadcast to all workers</td><td>Large table + small dimension table</td></tr>
+        <tr><td><strong>Sort-Merge Join</strong></td><td>Both sides large</td><td>Yes — both sides shuffled by key, then sorted</td><td>Large-large joins, equi-joins</td></tr>
+        <tr><td><strong>Shuffle Hash Join</strong></td><td>One side fits in executor memory</td><td>Yes — one side shuffled and hashed</td><td>Skewed data, unsortable keys</td></tr>
+        <tr><td><strong>Broadcast Nested Loop</strong></td><td>Non-equi join (>, !=, CROSS)</td><td>No for small side</td><td>Inequality conditions; avoid on large tables</td></tr>
+        <tr><td><strong>Cartesian Product</strong></td><td>CROSS JOIN or no join condition</td><td>No</td><td>Very small tables only</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="broadcast">Broadcast Hash Join</h2>
+
+    <p>The fastest join type. The small table is serialized and sent to every executor, avoiding any shuffle of the large table:</p>
+
+    <pre><code class="language-sql">-- Auto-broadcast: table smaller than spark.sql.autoBroadcastJoinThreshold (default 10MB)
+SELECT o.*, c.email, c.country
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id;
+-- If customers < 10MB, Spark auto-broadcasts it
+
+-- Manual hint: force broadcast even above threshold
+SELECT /*+ BROADCAST(c) */ o.*, c.email
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id;
+
+-- Increase auto-broadcast threshold (session level)
+SET spark.sql.autoBroadcastJoinThreshold = 52428800;  -- 50MB</code></pre>
+
+    <pre><code class="language-python"># PySpark broadcast hint
+from pyspark.sql.functions import broadcast
+
+result = orders.join(
+    broadcast(customers),
+    on="customer_id",
+    how="inner"
+)</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">Broadcast OOM Risk</div>
+      <p>Broadcasting a table uses driver memory (to serialize) and executor memory on each node (to hold the hash table). If you broadcast a 200MB table to 20 executors with 4GB memory each, that's 4GB just for this join. Databricks will OOM if the broadcast size exceeds executor memory. Check table size with <code>DESCRIBE DETAIL</code> before forcing a broadcast hint above the default threshold.</p>
+    </div>
+
+    <h2 id="sort-merge">Sort-Merge Join</h2>
+
+    <p>The default for large-large joins. Both tables are shuffled by join key, sorted, and then merged. It requires a shuffle but is predictable and memory-efficient:</p>
+
+    <pre><code class="language-python"># Observe sort-merge join in action
+df = spark.sql("""
+    EXPLAIN FORMATTED
+    SELECT o.order_id, o.amount, c.email
+    FROM orders o  -- 500GB
+    JOIN customers c  -- 50GB
+    ON o.customer_id = c.customer_id
+""")
+# Physical plan will show: SortMergeJoin [customer_id], [customer_id], Inner
+# With Exchange (shuffle) on both sides</code></pre>
+
+    <p>Sort-Merge join is often acceptable. Optimize it by:</p>
+    <ul>
+      <li>Reducing shuffle partitions: <code>SET spark.sql.shuffle.partitions = 200</code> (default is 200 but AQE adjusts this)</li>
+      <li>Ensuring join columns are the same type (type mismatch forces a cast which prevents pushdown)</li>
+      <li>Pre-sorting the data if you join on the same key repeatedly</li>
+    </ul>
+
+    <h2 id="skew">Data Skew: The Silent Killer</h2>
+
+    <p>Skew occurs when one join key value contains a disproportionate number of rows. One executor gets stuck processing the "hot key" while all others finish and sit idle. This is the most common cause of a job that runs to 99% and then hangs.</p>
+
+    <p>Symptoms: one task takes 10x longer than all others in the Spark UI Stages tab.</p>
+
+    <pre><code class="language-python"># Diagnose skew: check key distribution
+spark.sql("""
+    SELECT customer_id, COUNT(*) AS cnt
+    FROM orders
+    GROUP BY customer_id
+    ORDER BY cnt DESC
+    LIMIT 20
+""").display()
+# If top key has 10M rows and median has 100 rows, you have skew</code></pre>
+
+    <h3 id="salting">Fixing Skew with Salting</h3>
+
+    <p>Salting artificially increases cardinality of the hot key by adding a random suffix. This distributes the skewed key across N sub-keys, each processed by a different executor:</p>
+
+    <pre><code class="language-python">import pyspark.sql.functions as F
+
+N_BUCKETS = 10  # number of salt values
+
+# Salt the large (skewed) side
+orders_salted = orders.withColumn(
+    "salted_customer_id",
+    F.concat(F.col("customer_id"), F.lit("_"), (F.rand() * N_BUCKETS).cast("int").cast("string"))
+)
+
+# Explode the small side to match all possible salt values
+customers_exploded = customers \
+    .crossJoin(spark.range(N_BUCKETS).select(F.col("id").cast("string").alias("salt"))) \
+    .withColumn(
+        "salted_customer_id",
+        F.concat(F.col("customer_id"), F.lit("_"), F.col("salt"))
+    )
+
+# Join on the salted key
+result = orders_salted.join(
+    customers_exploded.drop("salt"),
+    on="salted_customer_id",
+    how="inner"
+).drop("salted_customer_id")</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">AQE Skew Handling</div>
+      <p>Databricks' Adaptive Query Execution (AQE) includes automatic skew join handling. When AQE detects that one join partition is much larger than the median, it splits that partition into smaller sub-partitions automatically. Enable with <code>spark.sql.adaptive.skewJoin.enabled = true</code> (default: true on Databricks). AQE handles most common skew cases. Use manual salting only when AQE isn't sufficient.</p>
+    </div>
+
+    <h2 id="join-ordering">Join Ordering</h2>
+
+    <p>When joining multiple tables, the order matters for performance. Join the most selective (most filtering) tables first, and broadcast small dimension tables early to reduce the size of intermediate results:</p>
+
+    <pre><code class="language-sql">-- Inefficient: cross product of large tables before filtering
+SELECT *
+FROM orders o
+JOIN order_items oi ON o.order_id = oi.order_id   -- 500GB x 2TB = pain
+JOIN products p ON oi.product_id = p.product_id
+WHERE o.status = 'completed'
+  AND p.category = 'electronics';
+
+-- Better: filter first, broadcast small dimension
+SELECT /*+ BROADCAST(p) */  *
+FROM orders o
+JOIN order_items oi ON o.order_id = oi.order_id
+JOIN products p ON oi.product_id = p.product_id
+WHERE o.status = 'completed'    -- applies early via predicate pushdown
+  AND p.category = 'electronics';
+
+-- Even better: pre-filter in a CTE
+WITH filtered_orders AS (
+    SELECT * FROM orders WHERE status = 'completed'
+),
+electronics_products AS (
+    SELECT * FROM products WHERE category = 'electronics'
+)
+SELECT /*+ BROADCAST(ep) */  *
+FROM filtered_orders fo
+JOIN order_items oi ON fo.order_id = oi.order_id
+JOIN electronics_products ep ON oi.product_id = ep.product_id;</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">CBO and Join Reordering</div>
+      <p>With accurate table statistics (<code>ANALYZE TABLE ... COMPUTE STATISTICS FOR ALL COLUMNS</code>), Spark's cost-based optimizer can automatically reorder joins to minimize intermediate result sizes. Enable with <code>SET spark.sql.cbo.enabled = true</code> (default: true on Databricks). CBO works best when statistics are fresh and representative &mdash; stale statistics lead to poor ordering choices.</p>
+    </div>
+
+    <div class="quiz" data-correct="1">
+      <div class="quiz-title">Quick Check</div>
+      <p class="quiz-question">A job is joining a 500GB orders table to a 500MB customers table. The job hangs at 99% for 30 minutes. The Spark UI shows one task taking 25x longer than all others. What's the most likely cause and fix?</p>
+      <ul class="quiz-options">
+        <li>The cluster is running out of disk space; add more workers</li>
+        <li>Data skew on the join key; fix with AQE skew join or manual salting</li>
+        <li>The customers table is too large to broadcast; increase the broadcast threshold to 1GB</li>
+        <li>The join type should be LEFT OUTER instead of INNER; rewrite the query</li>
+      </ul>
+      <button class="quiz-btn">Check Answer</button>
+      <div class="quiz-answer">
+        <strong>Data skew.</strong> One task running 25x longer than others is the classic skew signature: one join key value has far more rows than others. First check if AQE skew handling is enabled (<code>spark.sql.adaptive.skewJoin.enabled</code>). If it is but skew is still happening, the hot-key partition may exceed AQE's skew detection thresholds. Investigate key distribution and apply salting if necessary. Broadcasting customers (500MB) is risky for memory reasons and doesn't address skew.
+      </div>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Observe join strategies.</strong> Run <code>EXPLAIN FORMATTED</code> on three queries: one joining a large table to a tiny table (&lt;1MB), one joining two large tables, and one with a <code>BROADCAST</code> hint on the small table. Document which physical join strategy appears in each plan.</li>
+        <li><strong>Simulate and fix skew.</strong> Create a table where 80% of rows have <code>customer_id = 'C001'</code>. Join it with a customers table. Observe skew in the Spark UI (stages tab: look for one slow task). Implement the salting pattern and re-run. Verify the task duration distribution is now even.</li>
+        <li><strong>Multi-table join optimization.</strong> Write a query joining 4 tables. Run it with default settings and record execution time. Then: (1) add BROADCAST hint for small dimension tables, (2) run <code>ANALYZE TABLE</code> on all tables, (3) re-run and compare. Identify which optimization had the most impact.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch07-data-layout.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">7. Data Layout &amp; Partitioning</span>
+      </a>
+      <a href="ch09-catalyst-aqe.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">9. Catalyst Optimizer &amp; AQE</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

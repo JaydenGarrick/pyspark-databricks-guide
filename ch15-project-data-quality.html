@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 15: Project — Data Quality | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html" class="active">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 15</div>
+      <h1>Project: Data Quality Framework</h1>
+      <p class="chapter-subtitle">Build a reusable, data-driven quality check framework with a quarantine table, quality score tracking, and a Delta-backed monitoring report.</p>
+    </div>
+
+    <h2 id="what-we-build">What We're Building</h2>
+
+    <p>Data pipelines fail silently. A null price slips through, a duplicated order_id inflates revenue, a future date gets ingested from a misconfigured source. You need a framework that catches these proactively &mdash; not a one-off <code>assert</code>, but a reusable system that: (1) runs configurable checks, (2) quarantines bad rows without crashing the pipeline, and (3) writes check results to a monitoring table so quality trends are visible over time.</p>
+
+    <div class="callout success">
+      <div class="callout-title">Starter &amp; Finished Projects</div>
+      <p>Companion files live in <code>projects/data-quality/</code>:</p>
+      <ul>
+        <li><strong><code>starter/data_quality.py</code></strong> &mdash; <code>DataQualityCheck</code> class skeleton with <code>TODO 1</code>&ndash;<code>TODO 8</code></li>
+        <li><strong><code>finished/data_quality.py</code></strong> &mdash; Complete framework with all checks implemented</li>
+      </ul>
+    </div>
+
+    <h2 id="architecture">Framework Architecture</h2>
+
+    <p>Three components working together:</p>
+
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Responsibility</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>DataQualityCheck</code></td><td>Defines a single check: a name, a SQL expression that returns True/False per row, and a severity (WARNING vs ERROR)</td></tr>
+        <tr><td><code>DataQualityRunner</code></td><td>Runs a list of checks against a DataFrame; routes passing rows to the target table and failing rows to quarantine</td></tr>
+        <tr><td><code>monitoring.dq_results</code></td><td>Delta table that accumulates check run history: run_date, table, check_name, pass_count, fail_count, fail_pct, severity</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>You've probably written quality checks as: <code>assert df.filter(col("amount").isNull()).count() == 0</code>. That crashes the pipeline. This framework replaces the assert with a quarantine write &mdash; bad rows go to a side table with a reason column, the pipeline continues with clean rows, and you get trend data to see if quality is improving or degrading over time.</p>
+    </div>
+
+    <h2 id="step1-check">Step 1: Define Quality Checks as Data</h2>
+
+    <pre><code class="language-python">from dataclasses import dataclass
+from typing import List, Optional
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import *
+
+@dataclass
+class DataQualityCheck:
+    name: str
+    expression: str       # SQL expression returning boolean — True = PASS
+    severity: str = "ERROR"  # "ERROR" (quarantine) or "WARNING" (log only)
+    description: str = ""
+
+# Define checks for the orders table
+ORDER_CHECKS = [
+    DataQualityCheck(
+        name="amount_not_null",
+        expression="amount IS NOT NULL",
+        severity="ERROR",
+        description="Order amount cannot be null"
+    ),
+    DataQualityCheck(
+        name="amount_positive",
+        expression="amount > 0",
+        severity="ERROR",
+        description="Order amount must be positive"
+    ),
+    DataQualityCheck(
+        name="valid_status",
+        expression="status IN ('pending', 'completed', 'shipped', 'cancelled')",
+        severity="ERROR",
+        description="Status must be a known value"
+    ),
+    DataQualityCheck(
+        name="order_date_not_future",
+        expression="order_date <= current_date()",
+        severity="WARNING",
+        description="Order date should not be in the future"
+    ),
+    DataQualityCheck(
+        name="customer_id_not_null",
+        expression="customer_id IS NOT NULL",
+        severity="ERROR",
+        description="Customer ID cannot be null"
+    ),
+]</code></pre>
+
+    <h2 id="step2-runner">Step 2: The DataQualityRunner</h2>
+
+    <pre><code class="language-python"># TODO 1 — implement in starter
+# class DataQualityRunner:
+#   def __init__(self, checks: List[DataQualityCheck], table_name: str): ...
+#
+# TODO 2 — implement run() method:
+#   - For each check, add a boolean column via df.withColumn(check.name, expr(check.expression))
+#   - A row PASSES only if ALL checks pass
+#   - Split into passing_df and failing_df
+#   - Hint: failing condition = any check column is False
+#   - Hint: use functools.reduce with | (bitwise OR) across check failure flags
+#
+# TODO 3 — implement _build_fail_reason():
+#   - For each failing row, capture which check(s) failed
+#   - Hint: CASE WHEN NOT amount_is_null THEN 'amount_not_null' END
+#   - Concat all failure reasons with ', '
+#
+# TODO 4 — implement write_results():
+#   - Write passing rows to the target Delta table (append)
+#   - Write failing rows (ERROR severity) to quarantine table with fail_reason column
+#   - Log WARNING rows but don't quarantine them</code></pre>
+
+    <h2 id="step3-monitoring">Step 3: Write Check Results to Monitoring</h2>
+
+    <pre><code class="language-python"># TODO 5 — implement log_to_monitoring():
+# After each run, write a summary row to pipeline_demo.monitoring.dq_results:
+#   - run_date (today)
+#   - table_name
+#   - check_name
+#   - total_rows, pass_count, fail_count
+#   - fail_pct = fail_count / total_rows * 100
+#   - severity
+#   - run_timestamp
+#
+# Hint: build a list of dicts, then spark.createDataFrame(results_data)
+#       .write.format("delta").mode("append").saveAsTable(...)
+
+# TODO 6 — implement quality_score():
+# Return overall quality score for the run: pass_count / total_rows * 100
+# Weighted: ERROR checks count double vs WARNING checks</code></pre>
+
+    <h2 id="step4-use">Step 4: Using the Framework</h2>
+
+    <pre><code class="language-python"># TODO 7 — wire it up:
+# 1. Load the orders DataFrame (from Chapter 13's silver table, or use sample data)
+# 2. Inject 10% bad rows: null amounts, invalid statuses, future dates
+# 3. Run DataQualityRunner(ORDER_CHECKS, "pipeline_demo.silver.orders")
+# 4. Verify quarantine table has the bad rows with correct fail_reason
+# 5. Verify monitoring.dq_results has one row per check
+
+# TODO 8 — trend analysis:
+# Run the quality check 3 times with different % of bad rows (5%, 15%, 30%)
+# Query monitoring.dq_results to show quality trend over time:
+#   SELECT run_date, check_name, fail_pct
+#   FROM pipeline_demo.monitoring.dq_results
+#   ORDER BY run_date, check_name</code></pre>
+
+    <h2 id="monitoring-query">Monitoring Dashboard Query</h2>
+
+    <pre><code class="language-sql">-- Quality score trend over time
+SELECT
+    run_timestamp,
+    table_name,
+    SUM(pass_count) AS total_passed,
+    SUM(fail_count) AS total_failed,
+    ROUND(SUM(pass_count) * 100.0 / SUM(pass_count + fail_count), 1) AS overall_pass_pct
+FROM pipeline_demo.monitoring.dq_results
+GROUP BY run_timestamp, table_name
+ORDER BY run_timestamp;
+
+-- Which checks fail most often?
+SELECT
+    check_name,
+    severity,
+    COUNT(*) AS run_count,
+    ROUND(AVG(fail_pct), 2) AS avg_fail_pct,
+    MAX(fail_pct) AS max_fail_pct
+FROM pipeline_demo.monitoring.dq_results
+GROUP BY check_name, severity
+ORDER BY avg_fail_pct DESC;</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Databricks Native: Delta Live Tables Expectations</div>
+      <p>Delta Live Tables (DLT) has built-in data quality expectations via <code>@dlt.expect()</code> decorators that do exactly what this project implements manually. If you're using DLT, use native expectations instead. This project teaches the underlying mechanics so you understand what DLT is doing &mdash; and so you can build quality checks in non-DLT pipelines.</p>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Extension Challenges</div>
+      <ol>
+        <li><strong>Threshold-based alerting.</strong> Add a <code>threshold_pct</code> field to <code>DataQualityCheck</code>. If <code>fail_pct &gt; threshold_pct</code> for an ERROR check, raise a <code>DataQualityException</code> that fails the pipeline task. Add retry-with-investigation logic: if the check failed due to a known transient issue (null coming from an upstream system), the quarantine + retry pattern should self-heal on the next run.</li>
+        <li><strong>Schema drift detection.</strong> Add a <code>schema_check</code> that compares the incoming DataFrame's schema to an expected schema (stored as JSON in a DBFS volume). If any expected column is missing or has a different type, flag it as a schema drift ERROR. This catches upstream schema changes before they corrupt Silver.</li>
+        <li><strong>Quality SLA report.</strong> Write a query against <code>monitoring.dq_results</code> that computes a 7-day rolling average fail percentage per check. Flag any check where the rolling average exceeds 5% (your SLA). This is a real-world monitoring dashboard query &mdash; use the window functions from Chapter 4.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch14-project-sql-analytics.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">14. Project: SQL Analytics</span>
+      </a>
+      <a href="index.html" class="next">
+        <span class="nav-label">&#8617; Back to</span>
+        <span class="nav-title">Home</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

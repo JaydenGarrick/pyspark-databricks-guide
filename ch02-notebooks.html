@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 2: Notebooks &amp; Dev Patterns | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html" class="active">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 2</div>
+      <h1>Notebooks &amp; Dev Patterns</h1>
+      <p class="chapter-subtitle">dbutils, magic commands, %run, display(), widgets &mdash; the toolbox that makes Databricks notebooks more than just Jupyter.</p>
+    </div>
+
+    <h2 id="notebook-structure">The Databricks Notebook</h2>
+
+    <p>Databricks notebooks look like Jupyter but are fundamentally different. They run on a remote cluster, support multiple languages in the same notebook, share state across cells (and across <code>%run</code> calls), and integrate tightly with the Databricks platform. A few important differences from local Jupyter:</p>
+
+    <ul>
+      <li><strong>State is cluster-state, not kernel-state.</strong> Variables persist across cell executions and across notebook sessions attached to the same cluster. Detach/reattach to get a fresh slate.</li>
+      <li><strong>Cell outputs are rich.</strong> DataFrames render as interactive tables, plots render inline, and you can build dashboards directly from cell outputs.</li>
+      <li><strong>Notebooks are version-controlled.</strong> Each save creates a Git-compatible snapshot. You can connect notebooks directly to a Git repo.</li>
+    </ul>
+
+    <h2 id="magic-commands">Magic Commands</h2>
+
+    <p>Magic commands switch the language or context for a single cell. They must be the first line of the cell:</p>
+
+    <table>
+      <thead>
+        <tr><th>Magic</th><th>Effect</th><th>Common Use</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>%python</code></td><td>Run cell as Python (default)</td><td>PySpark, pandas, general logic</td></tr>
+        <tr><td><code>%sql</code></td><td>Run cell as SQL</td><td>Querying tables, DDL, quick data checks</td></tr>
+        <tr><td><code>%scala</code></td><td>Run cell as Scala</td><td>Libraries only available in Scala</td></tr>
+        <tr><td><code>%r</code></td><td>Run cell as R</td><td>Statistical analysis with R packages</td></tr>
+        <tr><td><code>%md</code></td><td>Render cell as Markdown</td><td>Documentation, section headers</td></tr>
+        <tr><td><code>%sh</code></td><td>Run shell command on driver</td><td>Checking disk space, installing packages, pinging endpoints</td></tr>
+        <tr><td><code>%pip</code></td><td>Install Python packages</td><td>Adding libraries without cluster restart (DBR 7.1+)</td></tr>
+        <tr><td><code>%run</code></td><td>Execute another notebook</td><td>Code reuse, shared utilities</td></tr>
+        <tr><td><code>%fs</code></td><td>DBFS filesystem commands</td><td>ls, cp, rm, mkdirs on DBFS</td></tr>
+      </tbody>
+    </table>
+
+    <pre><code class="language-python"># %pip installs packages into the current notebook session
+# Place at the top of the notebook before imports
+# COMMAND ----------
+%pip install great-expectations==0.18.0
+
+# COMMAND ----------
+# Now import normally
+import great_expectations as gx</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">%pip Restarts the Python Kernel</div>
+      <p><code>%pip install</code> triggers a Python kernel restart, which clears all variable state. Any variables defined in cells above will be lost. Always put <code>%pip</code> cells at the very top of your notebook, before any computation, and run top-to-bottom after adding a new dependency.</p>
+    </div>
+
+    <h2 id="dbutils">dbutils: The Databricks Swiss Army Knife</h2>
+
+    <p><code>dbutils</code> is a Databricks-specific utility module pre-loaded in every notebook. It has five main components:</p>
+
+    <h3 id="dbutils-fs">dbutils.fs — Filesystem Operations</h3>
+
+    <pre><code class="language-python"># List files
+dbutils.fs.ls("s3://my-bucket/data/")
+dbutils.fs.ls("dbfs:/tmp/")
+
+# Copy
+dbutils.fs.cp("dbfs:/tmp/source.csv", "dbfs:/tmp/dest.csv")
+
+# Move (rename)
+dbutils.fs.mv("dbfs:/tmp/old-name/", "dbfs:/tmp/new-name/", recurse=True)
+
+# Remove
+dbutils.fs.rm("dbfs:/tmp/stale-data/", recurse=True)
+
+# Make directory
+dbutils.fs.mkdirs("dbfs:/tmp/new-dir/")
+
+# Read a text file as a string
+content = dbutils.fs.head("dbfs:/tmp/config.json", maxBytes=10000)
+print(content)</code></pre>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>You might be used to Python's <code>os</code> module for filesystem operations. On Databricks, <code>os.listdir()</code> sees the driver's local filesystem &mdash; not DBFS or S3. Always use <code>dbutils.fs</code> for anything on DBFS or cloud storage, and <code>os</code> only for driver-local temp files.</p>
+    </div>
+
+    <h3 id="dbutils-secrets">dbutils.secrets — Secrets Management</h3>
+
+    <p>Never hardcode credentials in notebooks. Use Databricks secrets scopes:</p>
+
+    <pre><code class="language-python"># Retrieve a secret (never prints the value — returns a redacted string in UI)
+api_key = dbutils.secrets.get(scope="my-aws-scope", key="s3-access-key")
+
+# List available secret scopes
+dbutils.secrets.listScopes()
+
+# List secrets in a scope (shows key names only, not values)
+dbutils.secrets.list("my-aws-scope")</code></pre>
+
+    <p>When you call <code>dbutils.secrets.get()</code>, the value is returned as a Python string but is automatically redacted if it appears in cell output or logs. The string itself can be used normally in your code.</p>
+
+    <h3 id="dbutils-widgets">dbutils.widgets — Parameterizing Notebooks</h3>
+
+    <p>Widgets let you create notebook parameters that can be set from the UI or passed from a job. They're the Databricks equivalent of Jupyter ipywidgets, but they also integrate with Databricks Jobs:</p>
+
+    <pre><code class="language-python"># Define widgets (creates UI controls at top of notebook)
+dbutils.widgets.text("environment", "dev", "Environment")
+dbutils.widgets.dropdown("table_date", "2024-01-01",
+    ["2024-01-01", "2024-01-08", "2024-01-15"], "Table Date")
+dbutils.widgets.combobox("output_format", "delta",
+    ["delta", "parquet", "csv"], "Output Format")
+dbutils.widgets.multiselect("regions", "US",
+    ["US", "EU", "APAC"], "Regions")
+
+# Read widget values
+env = dbutils.widgets.get("environment")
+date = dbutils.widgets.get("table_date")
+fmt = dbutils.widgets.get("output_format")
+regions = dbutils.widgets.get("regions").split(",")  # multiselect returns CSV string
+
+print(f"Running for env={env}, date={date}, regions={regions}")</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Widgets in Production Jobs</div>
+      <p>When a notebook runs as part of a Databricks Job, widget values are supplied as job parameters. In the job definition, you map parameter names to widget names. The notebook code doesn't change &mdash; <code>dbutils.widgets.get("environment")</code> gets the value whether it comes from the UI or a job parameter. This is why widgets are the right way to parameterize production notebooks.</p>
+    </div>
+
+    <h3 id="dbutils-notebook">dbutils.notebook — Notebook Orchestration</h3>
+
+    <pre><code class="language-python"># Run another notebook synchronously and get its return value
+result = dbutils.notebook.run(
+    "/path/to/child-notebook",
+    timeout_seconds=3600,
+    arguments={"environment": "prod", "table_date": "2024-01-01"}
+)
+print(result)  # the value passed to dbutils.notebook.exit() in the child
+
+# Exit a notebook with a return value (used in child notebooks)
+dbutils.notebook.exit("SUCCESS: 1,234,567 rows processed")</code></pre>
+
+    <h2 id="run">%run: Importing Utilities Across Notebooks</h2>
+
+    <p><code>%run</code> executes another notebook in the current notebook's context. All functions, classes, and variables defined in the target notebook become available in the calling notebook. Think of it like Python's <code>exec(open("file.py").read())</code> &mdash; not an import, but a full execution in the same namespace:</p>
+
+    <pre><code class="language-python"># In a shared utility notebook at /Shared/utils/spark_helpers
+def read_delta_table(catalog, schema, table):
+    return spark.read.table(f"{catalog}.{schema}.{table}")
+
+def write_delta_table(df, catalog, schema, table, mode="overwrite"):
+    df.write.format("delta").mode(mode).saveAsTable(f"{catalog}.{schema}.{table}")
+
+# In your main notebook:
+# COMMAND ----------
+%run /Shared/utils/spark_helpers
+
+# COMMAND ----------
+# These functions are now available
+df = read_delta_table("my_catalog", "bronze", "raw_orders")
+write_delta_table(cleaned_df, "my_catalog", "silver", "orders")</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">%run Gotchas</div>
+      <p><strong>No imports:</strong> <code>%run</code> re-executes the entire notebook every time, including any expensive setup code. For large shared utilities, consider Databricks Repos with proper Python modules (<code>.py</code> files) instead. <strong>Variable collision:</strong> variables in the target notebook overwrite same-named variables in the caller. Name your utility variables carefully (underscore prefix or module-style namespacing).</p>
+    </div>
+
+    <h2 id="display">display() vs show() vs toPandas()</h2>
+
+    <p>This is one of the most common points of confusion for engineers coming from local PySpark:</p>
+
+    <div class="comparison">
+      <div class="lang-col">
+        <div class="lang-label pyspark">Local PySpark</div>
+        <pre><code class="language-python"># .show() is the standard way to view data
+df.show(20, truncate=False)
+
+# Output: plain text table
+# +----------+-----+
+# |first_name|score|
+# +----------+-----+
+# |Alice     |   92|
+# +----------+-----+
+
+# .toPandas() for richer display in Jupyter
+df.toPandas().head(20)</code></pre>
+      </div>
+      <div class="lang-col">
+        <div class="lang-label databricks">Databricks</div>
+        <pre><code class="language-python"># display() renders an interactive rich table
+display(df)
+
+# Supports sorting, filtering, pagination, charts
+# Does NOT pull all data to driver — paginates intelligently
+
+# .show() still works but produces plain text
+df.show(20)
+
+# .toPandas() still works — pulls ALL rows to driver
+# Dangerous on large DataFrames — set row limit first
+df.limit(10000).toPandas()</code></pre>
+      </div>
+    </div>
+
+    <p>Always prefer <code>display(df)</code> for interactive exploration in Databricks. Use <code>.show()</code> when you need text output (e.g., in job logs). Use <code>.toPandas()</code> only when you explicitly need a pandas DataFrame, and always limit rows first.</p>
+
+    <h2 id="sql-in-python">Mixing SQL and Python</h2>
+
+    <p>Spark SQL and the DataFrame API interoperate freely. You can switch between them at any point using <code>spark.sql()</code> and <code>createOrReplaceTempView()</code>:</p>
+
+    <pre><code class="language-python"># Register a DataFrame as a temporary view
+df.createOrReplaceTempView("orders_raw")
+
+# Query it with SQL
+result = spark.sql("""
+    SELECT
+        customer_id,
+        COUNT(*) AS order_count,
+        SUM(amount) AS total_spent
+    FROM orders_raw
+    WHERE status = 'completed'
+    GROUP BY customer_id
+    HAVING total_spent > 1000
+""")
+
+# Result is a DataFrame — continue with PySpark API
+result.filter(F.col("order_count") > 5).display()</code></pre>
+
+    <p>The <code>%sql</code> magic is syntactic sugar for <code>spark.sql()</code> &mdash; the result is displayed as a table and also accessible as <code>_sqldf</code> in the next Python cell:</p>
+
+    <pre><code class="language-sql">-- %sql cell
+SELECT customer_id, SUM(amount) as total
+FROM orders_raw
+GROUP BY customer_id
+ORDER BY total DESC
+LIMIT 10</code></pre>
+
+    <pre><code class="language-python"># Next Python cell can access the result
+top_customers = _sqldf  # this is the DataFrame from the last %sql cell
+top_customers.write.format("delta").saveAsTable("gold.top_customers")</code></pre>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Build a parameterized notebook.</strong> Create a notebook that accepts two widgets: <code>start_date</code> (text) and <code>env</code> (dropdown: dev/staging/prod). Use the values to build a table path like <code>f"{env}.orders_{start_date}"</code> and print it. Manually change widget values and re-run to verify they update.</li>
+        <li><strong>dbutils.secrets safety check.</strong> In your workspace, list all secret scopes with <code>dbutils.secrets.listScopes()</code>. For each scope, list the available keys. Note that you cannot retrieve values this way &mdash; confirm that any hardcoded credentials in your notebooks can be replaced with secret references.</li>
+        <li><strong>%run vs import.</strong> Create two notebooks: one with a helper function defined, and one that calls it using <code>%run</code>. Then refactor the helper into a <code>.py</code> file in a Databricks Repo and import it normally with Python's <code>import</code>. Compare the approaches: which is easier to test? Which has a cleaner namespace?</li>
+        <li><strong>display() chart.</strong> Load any DataFrame with at least one numeric column and one categorical column. Call <code>display(df)</code> and click the "+" chart icon to create a bar chart from the cell output. This is how Databricks ad-hoc dashboards work without any additional tools.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch01-architecture.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">1. Architecture &amp; Clusters</span>
+      </a>
+      <a href="ch03-delta-lake.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">3. Delta Lake</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

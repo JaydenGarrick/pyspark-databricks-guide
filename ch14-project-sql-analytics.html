@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 14: Project — SQL Analytics | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html" class="active">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 14</div>
+      <h1>Project: SQL Analytics</h1>
+      <p class="chapter-subtitle">Build a complete analytics suite using window functions, cohort analysis, revenue attribution, and QUALIFY-based deduplication &mdash; all in Spark SQL.</p>
+    </div>
+
+    <h2 id="what-we-build">What We're Building</h2>
+
+    <p>You're the analytics engineer for the same e-commerce platform. The Gold layer exists. Now you need to build the analytics queries that power the executive dashboard: cohort retention, revenue attribution by acquisition channel, customer ranking, and period-over-period growth.</p>
+
+    <div class="callout success">
+      <div class="callout-title">Starter &amp; Finished Projects</div>
+      <p>Companion files live in <code>projects/sql-analytics/</code>:</p>
+      <ul>
+        <li><strong><code>starter/analytics.py</code></strong> &mdash; Sample data pre-loaded; <code>TODO 1</code>&ndash;<code>TODO 8</code> with query skeletons to complete</li>
+        <li><strong><code>finished/analytics.py</code></strong> &mdash; All queries implemented with explanatory comments</li>
+      </ul>
+      <p>Run cells top-to-bottom in a Databricks notebook. Most TODOs are pure SQL &mdash; you write the query, we check the output shape.</p>
+    </div>
+
+    <h2 id="dataset">The Dataset</h2>
+
+    <p>The starter file creates these in-memory Delta tables using <code>createOrReplaceTempView</code>:</p>
+
+    <table>
+      <thead>
+        <tr><th>Table</th><th>Columns</th><th>Rows</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>orders</code></td><td>order_id, customer_id, product_id, amount, order_date, channel, region</td><td>~500</td></tr>
+        <tr><td><code>customers</code></td><td>customer_id, name, signup_date, cohort_month, channel</td><td>100</td></tr>
+        <tr><td><code>products</code></td><td>product_id, name, category, price</td><td>20</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>These analytics patterns are common in every data team: "how many of our January cohort were still active in April?" (retention), "which channel drives the highest LTV?" (attribution). You can do them with DataFrame groupBy + pivot, but Spark SQL window functions are more expressive, more readable to stakeholders, and often faster because Catalyst can optimize them better.</p>
+    </div>
+
+    <h2 id="step1-ranking">Step 1: Customer Revenue Ranking with QUALIFY</h2>
+
+    <p>Rank customers by total revenue. For ties, use <code>DENSE_RANK</code>. Use <code>QUALIFY</code> to show only top-10 without a subquery:</p>
+
+    <pre><code class="language-sql">-- TODO 1: Complete this query
+-- Expected output: 10 rows, one per customer, ranked by total_revenue DESC
+-- Must use DENSE_RANK() OVER (...) and QUALIFY rank &lt;= 10
+
+SELECT
+    customer_id,
+    SUM(amount) AS total_revenue,
+    COUNT(DISTINCT order_id) AS total_orders,
+    /* TODO: add DENSE_RANK() window here */
+FROM orders
+WHERE /* TODO: filter to completed orders */
+GROUP BY customer_id
+QUALIFY /* TODO: keep only top 10 by rank */
+ORDER BY total_revenue DESC</code></pre>
+
+    <h2 id="step2-mom">Step 2: Month-over-Month Revenue Growth</h2>
+
+    <p>Calculate MoM revenue growth using <code>LAG</code>. Show the revenue delta and growth percentage:</p>
+
+    <pre><code class="language-sql">-- TODO 2: Complete this query
+-- Expected: one row per month, with prev_month_revenue and growth_pct columns
+-- revenue_growth_pct = (current - previous) / previous * 100
+
+WITH monthly_revenue AS (
+    SELECT
+        DATE_TRUNC('month', order_date) AS month,
+        SUM(amount) AS revenue
+    FROM orders
+    GROUP BY DATE_TRUNC('month', order_date)
+)
+SELECT
+    month,
+    revenue,
+    /* TODO: LAG(revenue) to get prior month */
+    /* TODO: compute growth_pct */
+FROM monthly_revenue
+ORDER BY month</code></pre>
+
+    <h2 id="step3-cohort">Step 3: Cohort Retention Analysis</h2>
+
+    <p>The classic cohort table: for each signup cohort, what % of customers placed an order in each subsequent month? This requires a self-join and window functions:</p>
+
+    <pre><code class="language-sql">-- TODO 3: Build cohort retention
+-- Expected output: cohort_month | months_since_signup | customers_active | retention_pct
+-- Step 1: join orders to customers to get each customer's cohort
+-- Step 2: compute months_since_signup = DATEDIFF(months, cohort_month, order_month)
+-- Step 3: count distinct customers per cohort x months_since_signup
+-- Step 4: divide by cohort size to get retention_pct
+
+WITH cohort_base AS (
+    SELECT
+        c.customer_id,
+        c.cohort_month,
+        /* TODO: compute order_month and months_since_signup */
+    FROM customers c
+    JOIN orders o ON c.customer_id = o.customer_id
+),
+cohort_sizes AS (
+    SELECT cohort_month, COUNT(DISTINCT customer_id) AS cohort_size
+    FROM customers
+    GROUP BY cohort_month
+)
+SELECT
+    cb.cohort_month,
+    /* TODO: months_since_signup, customers_active, retention_pct */
+FROM cohort_base cb
+JOIN cohort_sizes cs ON cb.cohort_month = cs.cohort_month
+GROUP BY /* TODO */
+ORDER BY cohort_month, months_since_signup</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Reading Cohort Tables</div>
+      <p>A cohort table reads row-by-row: "Of the 50 customers who signed up in January (row 1), 48 ordered in month 0 (same month as signup), 35 ordered in month 1, 20 in month 2..." The diagonal shows the same calendar month across different cohorts &mdash; useful for separating seasonal effects from retention improvements.</p>
+    </div>
+
+    <h2 id="step4-attribution">Step 4: Revenue Attribution with Running Totals</h2>
+
+    <p>Show revenue by acquisition channel as a running total over time, and each channel's % of total monthly revenue:</p>
+
+    <pre><code class="language-sql">-- TODO 4: Channel attribution with running totals
+-- Expected: channel | month | monthly_revenue | running_total | pct_of_monthly_total
+
+WITH channel_monthly AS (
+    SELECT
+        channel,
+        DATE_TRUNC('month', order_date) AS month,
+        SUM(amount) AS monthly_revenue
+    FROM orders
+    GROUP BY channel, DATE_TRUNC('month', order_date)
+)
+SELECT
+    channel,
+    month,
+    monthly_revenue,
+    /* TODO: SUM() OVER (PARTITION BY channel ORDER BY month) for running total */
+    /* TODO: monthly_revenue / SUM() OVER (PARTITION BY month) * 100 for pct */
+FROM channel_monthly
+ORDER BY month, channel</code></pre>
+
+    <h2 id="step5-dedup">Step 5: Latest Order per Customer (QUALIFY dedup)</h2>
+
+    <p>Get each customer's most recent order. Use <code>QUALIFY ROW_NUMBER() = 1</code> to avoid a subquery:</p>
+
+    <pre><code class="language-sql">-- TODO 5: Latest order per customer — no subquery allowed, must use QUALIFY
+-- Expected: one row per customer_id, the most recent order by order_date
+-- Tiebreak on order_id DESC if same date
+
+SELECT
+    customer_id,
+    order_id,
+    order_date,
+    amount,
+    channel,
+    ROW_NUMBER() OVER (/* TODO */) AS rn
+FROM orders
+QUALIFY /* TODO */
+ORDER BY customer_id</code></pre>
+
+    <h2 id="step6-pivot">Step 6: Revenue by Category PIVOT</h2>
+
+    <pre><code class="language-sql">-- TODO 6: Pivot revenue by product category into columns
+-- Join orders to products to get category.
+-- Expected: month | electronics | apparel | home_goods | sports (each as a column)
+
+SELECT *
+FROM (
+    SELECT
+        DATE_TRUNC('month', o.order_date) AS month,
+        p.category,
+        o.amount
+    FROM orders o
+    JOIN products p ON o.product_id = p.product_id
+)
+PIVOT (
+    /* TODO: SUM(amount) FOR category IN (...) */
+)
+ORDER BY month</code></pre>
+
+    <h2 id="step7-performance">Step 7: Query Performance Analysis</h2>
+
+    <pre><code class="language-python"># TODO 7: Run EXPLAIN FORMATTED on the cohort retention query (TODO 3).
+# Identify:
+#   - How many shuffles (Exchange nodes) are there?
+#   - Is the join between orders and customers a broadcast or sort-merge?
+#   - Does predicate pushdown appear anywhere in the plan?
+
+cohort_query = """
+    -- paste your TODO 3 solution here
+"""
+spark.sql(f"EXPLAIN FORMATTED {cohort_query}")</code></pre>
+
+    <pre><code class="language-python"># TODO 8: Tune the cohort query.
+# If the customers table is small (&lt;10MB), add a BROADCAST hint.
+# Re-run EXPLAIN FORMATTED and confirm BroadcastHashJoin appears.
+# Record execution time before and after — how much did it improve?</code></pre>
+
+    <div class="exercise">
+      <div class="exercise-title">Extension Challenges</div>
+      <ol>
+        <li><strong>Sliding 7-day revenue.</strong> Write a query that computes 7-day rolling average revenue per channel using <code>ROWS BETWEEN 6 PRECEDING AND CURRENT ROW</code>. Plot the result with <code>display()</code> as a line chart &mdash; select Line chart in the visualization tab.</li>
+        <li><strong>Customer LTV bucket analysis.</strong> Use <code>NTILE(5)</code> to split customers into revenue quintiles. Show the median order value and churn rate (% with no order in the last 90 days) per quintile. Which quintile churns the most?</li>
+        <li><strong>Attribution model comparison.</strong> You have both "first touch" (the channel that acquired the customer) and "last touch" (the channel of each order). Compare total revenue attributed to each channel under first-touch vs last-touch. Which channel wins each model? What does the discrepancy tell you?</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch13-project-etl-pipeline.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">13. Project: ETL Pipeline</span>
+      </a>
+      <a href="ch15-project-data-quality.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">15. Project: Data Quality</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

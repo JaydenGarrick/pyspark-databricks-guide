@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 13: Project — ETL Pipeline | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html" class="active">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 13</div>
+      <h1>Project: ETL Pipeline</h1>
+      <p class="chapter-subtitle">Build a production-grade Bronze &rarr; Silver &rarr; Gold medallion ETL pipeline using Delta Lake, MERGE INTO, and schema enforcement.</p>
+    </div>
+
+    <h2 id="what-we-build">What We're Building</h2>
+
+    <p>You're building a daily order processing pipeline for an e-commerce platform. Raw JSON event data lands in S3 every hour. Your pipeline needs to ingest it into Bronze (raw), clean and validate it to Silver (trusted), and aggregate it to Gold (analytics-ready). The pipeline must handle late-arriving data, duplicate events, and schema drift gracefully.</p>
+
+    <div class="callout success">
+      <div class="callout-title">Starter &amp; Finished Projects</div>
+      <p>Companion files live in <code>projects/etl-pipeline/</code>:</p>
+      <ul>
+        <li><strong><code>starter/pipeline.py</code></strong> &mdash; Schemas and sample data pre-defined; <code>TODO 1</code>&ndash;<code>TODO 9</code> for you to implement</li>
+        <li><strong><code>finished/pipeline.py</code></strong> &mdash; Complete working solution with numbered inline comments</li>
+      </ul>
+      <p>The starter runs in a Databricks notebook (paste cell by cell separated by <code># COMMAND ----------</code>). Try building it yourself first!</p>
+    </div>
+
+    <h2 id="architecture">Pipeline Architecture</h2>
+
+    <p>The medallion architecture separates concerns across three Delta tables:</p>
+
+    <table>
+      <thead>
+        <tr><th>Layer</th><th>Table</th><th>What it holds</th><th>Operations</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Bronze</strong></td><td><code>orders_raw</code></td><td>Exact copy of source JSON; append-only; no transformations</td><td>APPEND with dedup on event_id</td></tr>
+        <tr><td><strong>Silver</strong></td><td><code>orders</code></td><td>Validated, cleaned, typed; one row per order</td><td>MERGE (upsert on order_id)</td></tr>
+        <tr><td><strong>Gold</strong></td><td><code>revenue_daily</code></td><td>Aggregated daily metrics per product/region</td><td>MERGE with overwrite for the day's window</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>You've probably written ETL as: read → transform → overwrite. The medallion pattern replaces that overwrite with MERGE. This makes the pipeline idempotent: running it twice on the same input produces the same result. It also enables easy reprocessing: drop the Bronze rows for a bad date range and re-run &mdash; Silver and Gold self-correct on the next run.</p>
+    </div>
+
+    <h2 id="step1-setup">Step 1: Schema Definitions and Sample Data</h2>
+
+    <p>The starter file provides these for you. Understand them before implementing anything:</p>
+
+    <pre><code class="language-python">from pyspark.sql.types import *
+from pyspark.sql.functions import *
+from datetime import date, datetime
+import json
+
+# Bronze schema: permissive — all fields as strings to accept any incoming data
+BRONZE_SCHEMA = StructType([
+    StructField("event_id",   StringType(), nullable=True),
+    StructField("order_id",   StringType(), nullable=True),
+    StructField("customer_id",StringType(), nullable=True),
+    StructField("product_id", StringType(), nullable=True),
+    StructField("quantity",   StringType(), nullable=True),   # string — enforce in silver
+    StructField("unit_price", StringType(), nullable=True),   # string — enforce in silver
+    StructField("status",     StringType(), nullable=True),
+    StructField("region",     StringType(), nullable=True),
+    StructField("event_ts",   StringType(), nullable=True),
+])
+
+# Silver schema: typed and validated
+SILVER_SCHEMA = StructType([
+    StructField("order_id",   StringType(),    nullable=False),
+    StructField("customer_id",StringType(),    nullable=False),
+    StructField("product_id", StringType(),    nullable=False),
+    StructField("quantity",   IntegerType(),   nullable=False),
+    StructField("unit_price", DecimalType(10,2),nullable=False),
+    StructField("amount",     DecimalType(10,2),nullable=False),
+    StructField("status",     StringType(),    nullable=False),
+    StructField("region",     StringType(),    nullable=False),
+    StructField("order_date", DateType(),      nullable=False),
+    StructField("ingested_at",TimestampType(), nullable=False),
+])
+
+# Sample raw events (duplicates intentional — event_id differs, order_id same)
+RAW_EVENTS = [
+    ("evt-001", "ord-1001", "cust-A", "prod-X", "2",  "49.99", "completed", "us-west", "2024-01-15 08:00:00"),
+    ("evt-002", "ord-1002", "cust-B", "prod-Y", "1",  "129.00","completed", "us-east", "2024-01-15 09:00:00"),
+    ("evt-003", "ord-1001", "cust-A", "prod-X", "2",  "49.99", "completed", "us-west", "2024-01-15 08:00:00"),  # dup
+    ("evt-004", "ord-1003", "cust-C", "prod-X", "3",  "49.99", "cancelled", "eu-west", "2024-01-15 10:00:00"),
+    ("evt-005", "ord-1004", "cust-D", "prod-Z", "1",  None,    "pending",   "us-west", "2024-01-15 11:00:00"),  # null price
+    ("evt-006", "ord-1002", "cust-B", "prod-Y", "1",  "129.00","shipped",   "us-east", "2024-01-15 14:00:00"),  # status update
+]</code></pre>
+
+    <h2 id="step2-bronze">Step 2: Bronze Ingestion with Deduplication</h2>
+
+    <p>Bronze gets every raw event, but we deduplicate on <code>event_id</code> within each micro-batch. Use <code>dropDuplicates</code> before writing, then append to the Delta table:</p>
+
+    <pre><code class="language-python"># TODO 1 — implement in starter
+# Hint: create DataFrame from RAW_EVENTS with BRONZE_SCHEMA
+# Hint: deduplicate on event_id using .dropDuplicates(["event_id"])
+# Hint: add ingestion_ts column with current_timestamp()
+# Hint: write to delta table "pipeline_demo.bronze.orders_raw" in append mode
+# Hint: use .option("mergeSchema", "true") for schema evolution tolerance</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Why Deduplicate at Bronze?</div>
+      <p>Source systems (Kafka, SQS, webhooks) deliver at-least-once. The same event can arrive multiple times. Deduplicating at Bronze on <code>event_id</code> means Silver and Gold don't need to worry about event-level duplicates. Bronze dedup handles message delivery retries; Silver's MERGE handles order-level updates (an order moving from "pending" to "completed" is the same order, not a duplicate).</p>
+    </div>
+
+    <h2 id="step3-silver">Step 3: Silver Transformation with MERGE</h2>
+
+    <p>Silver casts types, validates non-null constraints, computes derived fields, and uses MERGE to handle both inserts and updates:</p>
+
+    <pre><code class="language-python"># TODO 2 — implement in starter
+# Hint: read from bronze table "pipeline_demo.bronze.orders_raw"
+# Hint: cast quantity to IntegerType, unit_price to DecimalType(10,2)
+# Hint: compute amount = quantity * unit_price
+# Hint: cast event_ts to TimestampType, extract order_date as DateType
+# Hint: filter out rows where unit_price IS NULL or quantity IS NULL
+
+# TODO 3 — implement in starter
+# Hint: use DeltaTable.forName() to reference the silver table
+# Hint: MERGE on order_id — when matched update status + ingested_at,
+#       when not matched insert all columns
+# Hint: the merge condition: target.order_id = source.order_id</code></pre>
+
+    <details>
+      <summary>Show Silver MERGE implementation</summary>
+      <pre><code class="language-python">from delta.tables import DeltaTable
+
+# Read and transform bronze
+bronze_df = spark.table("pipeline_demo.bronze.orders_raw")
+
+silver_df = bronze_df \
+    .dropDuplicates(["order_id", "event_ts"]) \
+    .withColumn("quantity",   col("quantity").cast(IntegerType())) \
+    .withColumn("unit_price", col("unit_price").cast(DecimalType(10, 2))) \
+    .withColumn("amount",     (col("quantity") * col("unit_price")).cast(DecimalType(10, 2))) \
+    .withColumn("order_date", to_date(col("event_ts").cast(TimestampType()))) \
+    .withColumn("ingested_at", current_timestamp()) \
+    .filter(col("unit_price").isNotNull() & col("quantity").isNotNull()) \
+    .select(
+        "order_id", "customer_id", "product_id",
+        "quantity", "unit_price", "amount",
+        "status", "region", "order_date", "ingested_at"
+    )
+
+silver_table = DeltaTable.forName(spark, "pipeline_demo.silver.orders")
+silver_table.alias("target").merge(
+    silver_df.alias("source"),
+    "target.order_id = source.order_id"
+).whenMatchedUpdate(set={
+    "status":      "source.status",
+    "ingested_at": "source.ingested_at"
+}).whenNotMatchedInsertAll().execute()</code></pre>
+    </details>
+
+    <h2 id="step4-gold">Step 4: Gold Aggregation</h2>
+
+    <p>Gold aggregates Silver into daily revenue metrics per product and region. Use MERGE with a date-range window to make the aggregation idempotent:</p>
+
+    <pre><code class="language-python"># TODO 4 — implement in starter
+# Hint: read silver, filter to completed orders only (status = 'completed')
+# Hint: group by order_date, product_id, region
+# Hint: aggregate: total_orders (count), total_revenue (sum of amount),
+#       avg_order_value (avg of amount)
+# Hint: MERGE into gold on order_date + product_id + region</code></pre>
+
+    <h2 id="step5-validate">Step 5: Validate the Pipeline End-to-End</h2>
+
+    <pre><code class="language-python"># TODO 5 — run these validation queries
+# 1. Count rows in each layer
+# 2. Verify bronze has 6 rows (all raw events)
+# 3. Verify silver has 5 rows (deduped on order_id — evt-003 removed, evt-006 updated ord-1002)
+# 4. Verify gold has 2 rows (only completed orders: ord-1001, ord-1002)
+# 5. Check silver for no null amounts
+
+# TODO 6 — time travel check
+# Read bronze table as of VERSION 0 (first write)
+# Verify row count matches what was in the first batch</code></pre>
+
+    <pre><code class="language-python"># Validation queries
+print("=== Layer Row Counts ===")
+spark.sql("SELECT 'bronze' as layer, COUNT(*) as cnt FROM pipeline_demo.bronze.orders_raw UNION ALL"
+          "SELECT 'silver', COUNT(*) FROM pipeline_demo.silver.orders UNION ALL"
+          "SELECT 'gold',   COUNT(*) FROM pipeline_demo.gold.revenue_daily").display()
+
+print("\n=== Null Check (Silver) ===")
+spark.sql("""
+    SELECT COUNT(*) as null_amounts
+    FROM pipeline_demo.silver.orders
+    WHERE amount IS NULL
+""").display()
+
+print("\n=== Gold Revenue Summary ===")
+spark.sql("""
+    SELECT product_id, region, total_revenue, total_orders, avg_order_value
+    FROM pipeline_demo.gold.revenue_daily
+    ORDER BY total_revenue DESC
+""").display()</code></pre>
+
+    <h2 id="step6-optimize">Step 6: OPTIMIZE and VACUUM</h2>
+
+    <pre><code class="language-python"># TODO 7 — run OPTIMIZE on silver, Z-ordered by order_date + region
+# Hint: OPTIMIZE pipeline_demo.silver.orders ZORDER BY (order_date, region)
+
+# TODO 8 — check the transaction log history
+# Hint: DESCRIBE HISTORY pipeline_demo.silver.orders
+# Identify: which operations appear? (WRITE, MERGE, OPTIMIZE)
+
+# TODO 9 — schedule a retention policy
+# Set the silver table to retain 30 days of history
+# Hint: ALTER TABLE pipeline_demo.silver.orders
+#       SET TBLPROPERTIES ('delta.logRetentionDuration' = 'interval 30 days')</code></pre>
+
+    <h2 id="complete-solution">Complete Solution</h2>
+
+    <details>
+      <summary>Show complete finished pipeline (spoiler!)</summary>
+      <pre><code class="language-python"># See projects/etl-pipeline/finished/pipeline.py for the full annotated solution</code></pre>
+    </details>
+
+    <div class="exercise">
+      <div class="exercise-title">Extension Challenges</div>
+      <ol>
+        <li><strong>Add Change Data Feed.</strong> Enable CDF on the silver table. After running the pipeline twice (with one order status changing from "pending" to "completed"), query <code>table_changes()</code> to see only the changed rows. This is how you'd feed a downstream notification service.</li>
+        <li><strong>Parameterize by date.</strong> Add a <code>run_date</code> widget to the notebook. Modify Bronze ingestion to filter <code>event_ts</code> to only the specified date. Modify Gold to overwrite only that date's partition. This makes the pipeline safe for backfill.</li>
+        <li><strong>Add a quarantine table.</strong> Instead of filtering null-price rows out silently in Silver, write them to a <code>pipeline_demo.monitoring.quarantine</code> table with a <code>rejection_reason</code> column. This is prerequisite knowledge for Chapter 15's data quality project.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch12-aws-integration.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">12. AWS Integration</span>
+      </a>
+      <a href="ch14-project-sql-analytics.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">14. Project: SQL Analytics</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

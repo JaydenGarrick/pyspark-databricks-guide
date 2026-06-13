@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PySpark to Databricks: Deep Dive</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html" class="active">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <section class="hero">
+      <h1>PySpark to Databricks</h1>
+      <p class="subtitle">A deep dive for engineers who already know the basics. You can read a CSV and do a groupBy &mdash; now let's make you dangerous.</p>
+    </section>
+
+    <h2 id="why">Why This Guide If You Already Know PySpark?</h2>
+
+    <p>You can create a <code>SparkSession</code>, read a DataFrame, filter rows, and write to Parquet. That's a solid foundation. But there's a chasm between "I can run PySpark" and "I understand what Databricks is actually doing and why my jobs cost $400/run."</p>
+
+    <p>This guide targets the gap. It assumes basic PySpark fluency and teaches the concepts that actually matter for production Databricks work: Delta Lake internals, Spark SQL beyond <code>SELECT *</code>, join strategies, the Catalyst optimizer, Unity Catalog, and AWS integration.</p>
+
+    <div class="comparison">
+      <div class="lang-col">
+        <div class="lang-label pyspark">What You Already Know</div>
+        <ul>
+          <li>SparkSession, DataFrames, RDDs</li>
+          <li><code>df.filter()</code>, <code>df.groupBy()</code>, <code>df.join()</code></li>
+          <li>Reading CSV/Parquet from a path</li>
+          <li>Writing output with <code>df.write.parquet()</code></li>
+          <li>Basic Spark SQL: <code>SELECT</code>, <code>WHERE</code>, <code>GROUP BY</code></li>
+          <li>Column expressions with <code>F.col()</code>, <code>F.lit()</code></li>
+        </ul>
+      </div>
+      <div class="lang-col">
+        <div class="lang-label databricks">What This Guide Adds</div>
+        <ul>
+          <li><strong>Delta Lake</strong> &mdash; ACID transactions, time travel, MERGE</li>
+          <li><strong>Spark SQL mastery</strong> &mdash; window functions, CTEs, QUALIFY</li>
+          <li><strong>Performance reasoning</strong> &mdash; partitioning, Z-order, broadcast vs sort-merge</li>
+          <li><strong>Catalyst &amp; AQE</strong> &mdash; reading query plans, optimizer behavior</li>
+          <li><strong>Databricks platform</strong> &mdash; Workflows, Unity Catalog, secrets</li>
+          <li><strong>AWS integration</strong> &mdash; S3 access patterns, instance profiles</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">How "If You Know Basic PySpark" Callouts Work</div>
+      <p>Throughout this guide, amber callout boxes like this one bridge what you already know in PySpark to the Databricks-native concept being introduced. If something feels new, check these boxes first &mdash; they give you the anchor before the deep dive.</p>
+    </div>
+
+    <h3>The Mental Shift</h3>
+    <p>Basic PySpark teaches you <em>what to type</em>. This guide teaches you <em>why it works</em> and <em>when to choose differently</em>. The difference between a PySpark user and a Databricks engineer is understanding the execution layer: what Catalyst does with your query, why that join spilled to disk, and why your Delta table is 50,000 small files.</p>
+
+    <h3>Spark SQL as Your Anchor</h3>
+    <p>Most PySpark developers underuse Spark SQL. They reach for the DataFrame API because it feels more "programmatic," but SQL is often clearer, faster to write, and equally performant. This guide treats Spark SQL as a first-class citizen &mdash; Part II is dedicated entirely to it, including features like <code>QUALIFY</code>, window frames, and lateral column aliases that most engineers don't know exist.</p>
+
+    <div class="callout info">
+      <div class="callout-title">Databricks Runtime Assumed</div>
+      <p>This guide targets <strong>Databricks Runtime 13.3 LTS or later</strong> (which ships Spark 3.4+). Some features &mdash; Liquid Clustering, <code>EXECUTE IMMEDIATE</code>, Unity Catalog &mdash; require specific DBR versions and are noted inline. If you're on an older runtime, the core concepts still apply but specific APIs may differ.</p>
+    </div>
+
+    <div class="callout drawback">
+      <div class="callout-title">Real Talk: What This Guide Is Not</div>
+      <p>This is not an intro to PySpark, a Databricks certification study guide, or a definitive reference for every API. It is a <strong>practitioner-focused deep dive</strong> that teaches the concepts experienced Databricks engineers use daily. Some topics (streaming, MLflow, Databricks SQL warehouse tuning) are mentioned but not covered in depth &mdash; they each deserve their own guide.</p>
+    </div>
+
+    <h2 id="toc">Table of Contents</h2>
+
+    <div class="toc-grid">
+      <div class="toc-part">
+        <div class="toc-part-title">Part I: The Databricks World</div>
+        <a href="ch01-architecture.html" class="toc-item">
+          <span class="ch-num">01</span>
+          <span class="ch-title">Architecture &amp; Clusters</span>
+          <span class="ch-desc">Driver, executors, DBR, cluster modes, DBFS vs S3</span>
+        </a>
+        <a href="ch02-notebooks.html" class="toc-item">
+          <span class="ch-num">02</span>
+          <span class="ch-title">Notebooks &amp; Dev Patterns</span>
+          <span class="ch-desc">dbutils, magic commands, %run, display(), widgets</span>
+        </a>
+        <a href="ch03-delta-lake.html" class="toc-item">
+          <span class="ch-num">03</span>
+          <span class="ch-title">Delta Lake</span>
+          <span class="ch-desc">ACID on object storage, time travel, MERGE, OPTIMIZE</span>
+        </a>
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-title">Part II: Spark SQL Mastery</div>
+        <a href="ch04-window-functions.html" class="toc-item">
+          <span class="ch-num">04</span>
+          <span class="ch-title">Window Functions &amp; Analytics</span>
+          <span class="ch-desc">OVER(), ROW_NUMBER, LAG/LEAD, frames, QUALIFY</span>
+        </a>
+        <a href="ch05-advanced-sql.html" class="toc-item">
+          <span class="ch-num">05</span>
+          <span class="ch-title">Advanced SQL Patterns</span>
+          <span class="ch-desc">CTEs, PIVOT, EXPLODE, JSON, EXECUTE IMMEDIATE</span>
+        </a>
+        <a href="ch06-sql-performance.html" class="toc-item">
+          <span class="ch-num">06</span>
+          <span class="ch-title">SQL Performance Patterns</span>
+          <span class="ch-desc">EXPLAIN, join hints, predicate pushdown, CBO</span>
+        </a>
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-title">Part III: Performance Engineering</div>
+        <a href="ch07-data-layout.html" class="toc-item">
+          <span class="ch-num">07</span>
+          <span class="ch-title">Data Layout &amp; Partitioning</span>
+          <span class="ch-desc">Disk partitions, Z-Order, Liquid Clustering, file sizes</span>
+        </a>
+        <a href="ch08-joins.html" class="toc-item">
+          <span class="ch-num">08</span>
+          <span class="ch-title">Join Strategies</span>
+          <span class="ch-desc">Broadcast, sort-merge, skew, salting, AQE joins</span>
+        </a>
+        <a href="ch09-catalyst-aqe.html" class="toc-item">
+          <span class="ch-num">09</span>
+          <span class="ch-title">Catalyst Optimizer &amp; AQE</span>
+          <span class="ch-desc">Query planning pipeline, rules, CBO, adaptive execution</span>
+        </a>
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-title">Part IV: The Platform</div>
+        <a href="ch10-workflows.html" class="toc-item">
+          <span class="ch-num">10</span>
+          <span class="ch-title">Workflows &amp; Orchestration</span>
+          <span class="ch-desc">Jobs, task DAGs, cluster types, task values, retries</span>
+        </a>
+        <a href="ch11-unity-catalog.html" class="toc-item">
+          <span class="ch-num">11</span>
+          <span class="ch-title">Unity Catalog</span>
+          <span class="ch-desc">Three-level namespace, grants, row filters, lineage</span>
+        </a>
+        <a href="ch12-aws-integration.html" class="toc-item">
+          <span class="ch-num">12</span>
+          <span class="ch-title">AWS Integration</span>
+          <span class="ch-desc">Instance profiles, secrets, S3 access, cross-account</span>
+        </a>
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-title">Part V: Building Things</div>
+        <a href="ch13-project-etl-pipeline.html" class="toc-item">
+          <span class="ch-num">13</span>
+          <span class="ch-title">Project: ETL Pipeline</span>
+          <span class="ch-desc">Build a Bronze &rarr; Silver &rarr; Gold medallion pipeline</span>
+        </a>
+        <a href="ch14-project-sql-analytics.html" class="toc-item">
+          <span class="ch-num">14</span>
+          <span class="ch-title">Project: SQL Analytics Challenge</span>
+          <span class="ch-desc">Window functions, cohort analysis, revenue attribution</span>
+        </a>
+        <a href="ch15-project-data-quality.html" class="toc-item">
+          <span class="ch-num">15</span>
+          <span class="ch-title">Project: Data Quality Framework</span>
+          <span class="ch-desc">Reusable checks, quarantine tables, quality reports</span>
+        </a>
+      </div>
+    </div>
+
+    <h2 id="how-to-read">How to Use This Guide</h2>
+
+    <p>Every chapter is structured the same way:</p>
+    <ol>
+      <li><strong>Basic PySpark anchor first</strong> &mdash; we start from what you already know</li>
+      <li><strong>Side-by-side comparisons</strong> &mdash; PySpark DataFrame API vs SQL vs Databricks-native</li>
+      <li><strong>Honest trade-offs</strong> &mdash; every feature has a cost, and we discuss it</li>
+      <li><strong>Quizzes</strong> &mdash; test your understanding before moving on</li>
+      <li><strong>Exercises</strong> &mdash; hands-on extension challenges</li>
+    </ol>
+
+    <p>If you have solid basic PySpark, <strong>Parts I and II</strong> will feel partially familiar and partially revelatory. Delta Lake (Chapter 3) and window functions (Chapter 4) are where most engineers level up. <strong>Part III</strong> is where you stop guessing why jobs are slow and start knowing.</p>
+
+    <div class="callout info">
+      <div class="callout-title">Prerequisites</div>
+      <p>You should be comfortable with: creating a SparkSession, reading/writing DataFrames, basic column expressions (<code>F.col</code>, <code>F.lit</code>, <code>F.when</code>), <code>groupBy</code> and <code>agg</code>, <code>join</code>, and basic SQL (<code>SELECT</code>, <code>WHERE</code>, <code>GROUP BY</code>, <code>JOIN</code>). No Databricks-specific knowledge is assumed.</p>
+    </div>
+
+    <div class="chapter-nav">
+      <div></div>
+      <a href="ch01-architecture.html" class="next">
+        <span class="nav-label">First Chapter &rarr;</span>
+        <span class="nav-title">1. Architecture &amp; Clusters</span>
+      </a>
+    </div>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

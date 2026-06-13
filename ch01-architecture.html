@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 1: Architecture &amp; Clusters | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html" class="active">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 1</div>
+      <h1>Architecture &amp; Clusters</h1>
+      <p class="chapter-subtitle">What is actually happening when you run a cell. Understanding the machinery underneath Databricks.</p>
+    </div>
+
+    <h2 id="mental-model">The Mental Model: Driver and Executors</h2>
+
+    <p>Basic PySpark hides a distributed system behind a comfortable Python API. When you write <code>df.groupBy("country").count()</code>, you are describing a computation &mdash; not running it. Databricks translates that description into tasks, distributes those tasks across a cluster of machines, and collects the results.</p>
+
+    <p>Every Databricks cluster has two types of nodes:</p>
+
+    <table>
+      <thead>
+        <tr><th>Node Type</th><th>Role</th><th>What lives there</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Driver</strong></td><td>One per cluster</td><td>Your notebook process, SparkContext, task scheduler, result collection</td></tr>
+        <tr><td><strong>Executor</strong></td><td>N per cluster</td><td>JVM processes that execute tasks, hold partition data in memory, write shuffle files</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>When you call <code>SparkSession.builder.getOrCreate()</code> locally, the "cluster" is just your laptop &mdash; the driver and executor run in the same JVM. On Databricks, the driver is one EC2 instance and executors are other EC2 instances. This is why <code>df.toPandas()</code> is dangerous at scale: it pulls all executor data across the network back to the driver's memory.</p>
+    </div>
+
+    <p>The key consequence: <strong>your Python code runs on the driver</strong>. Spark transformations execute on executors. This means Python variables, loops, and logic that aren't inside a Spark operation run on a single machine. Only what's expressed as a Spark operation distributes.</p>
+
+    <pre><code class="language-python"># This loop runs on the DRIVER — not distributed
+for country in ["US", "UK", "DE"]:
+    df_country = df.filter(F.col("country") == country)
+    # Each filter() call creates a Spark plan, but the loop itself is sequential Python
+
+# This is distributed — one Spark job, all workers
+df.groupBy("country").count()  # all partitions processed in parallel</code></pre>
+
+    <h2 id="dbt-vs-spark">Databricks Runtime vs Open-Source Spark</h2>
+
+    <p>Databricks doesn't just run vanilla Apache Spark. Databricks Runtime (DBR) is a hardened, optimized distribution that ships with proprietary optimizations on top of the open-source engine:</p>
+
+    <table>
+      <thead>
+        <tr><th>Feature</th><th>Open-Source Spark</th><th>Databricks Runtime</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Photon engine</td><td>No</td><td>Yes (DBR 9.1+) — C++ vectorized execution</td></tr>
+        <tr><td>Delta Lake</td><td>Separate OSS project</td><td>Native, deeply integrated</td></tr>
+        <tr><td>Auto Optimize</td><td>No</td><td>Yes — automatic small file compaction</td></tr>
+        <tr><td>Liquid Clustering</td><td>No</td><td>Yes (DBR 13.3+)</td></tr>
+        <tr><td>Enhanced AQE</td><td>Basic</td><td>Extended with skew detection</td></tr>
+        <tr><td>Pre-installed libraries</td><td>Minimal</td><td>pandas, numpy, scikit-learn, MLflow, etc.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <div class="callout-title">Photon: The Silent Speedup</div>
+      <p>Photon is a vectorized query engine written in C++ that replaces Spark's JVM-based execution for SQL and DataFrame operations. It automatically activates for supported operations &mdash; you don't change any code. Most SQL-heavy workloads see 2-8x speedup. The trade-off: Photon costs more DBUs (Databricks Units) per hour than non-Photon runtimes. Always benchmark before assuming Photon is cheaper end-to-end.</p>
+    </div>
+
+    <h2 id="cluster-types">Cluster Types: Which One to Use</h2>
+
+    <p>Databricks has three distinct compute types, and using the wrong one is expensive:</p>
+
+    <h3 id="interactive-clusters">All-Purpose (Interactive) Clusters</h3>
+    <p>These are the clusters you create from the Compute tab and attach notebooks to. They persist until terminated and are shared across users and notebooks on the same cluster.</p>
+    <ul>
+      <li><strong>Use for:</strong> development, exploration, iterative analysis</li>
+      <li><strong>Cost gotcha:</strong> They keep running (and billing) when idle unless you set auto-termination</li>
+      <li><strong>Best practice:</strong> Always set <code>auto termination = 30 minutes</code> on dev clusters</li>
+    </ul>
+
+    <h3 id="job-clusters">Job Clusters</h3>
+    <p>Ephemeral clusters created by a Job run and terminated when the job finishes. You configure them in the job definition, not the Compute UI.</p>
+    <ul>
+      <li><strong>Use for:</strong> production pipelines, scheduled jobs, anything that runs unattended</li>
+      <li><strong>Cost advantage:</strong> ~30-50% cheaper DBU rate than all-purpose clusters</li>
+      <li><strong>Cold start:</strong> 4-8 minutes to provision, so not suitable for low-latency needs</li>
+    </ul>
+
+    <h3 id="sql-warehouses">SQL Warehouses (formerly SQL Endpoints)</h3>
+    <p>Purpose-built compute for Databricks SQL. Managed by Databricks, auto-scaling, auto-suspending. Used by Databricks SQL dashboards, SQL Editor, and BI tools via JDBC/ODBC.</p>
+    <ul>
+      <li><strong>Use for:</strong> BI queries, dashboards, ad-hoc SQL exploration</li>
+      <li><strong>Not for:</strong> ETL pipelines, complex Python logic, ML workloads</li>
+    </ul>
+
+    <div class="callout warning">
+      <div class="callout-title">Common Mistake: All-Purpose Clusters in Production</div>
+      <p>Running production jobs on all-purpose clusters is expensive and fragile. You pay a higher DBU rate, cluster configuration changes affect all running jobs, and the cluster's uptime is not guaranteed. Always use job clusters for production. The extra cold-start time is almost always worth the cost and reliability improvement.</p>
+    </div>
+
+    <h2 id="cluster-config">Cluster Configuration That Matters</h2>
+
+    <p>Most engineers accept default cluster configs and wonder why things are slow or expensive. Here are the configs that actually matter:</p>
+
+    <h3 id="worker-types">Instance Types</h3>
+    <p>EC2 instances come in families. For Databricks workloads, the typical guidance is:</p>
+    <table>
+      <thead>
+        <tr><th>Workload</th><th>Instance Family</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>General ETL / SQL</td><td><code>r5</code> / <code>r6i</code> (memory-optimized)</td><td>Spark executors are memory-hungry; shuffles spill to disk when memory is tight</td></tr>
+        <tr><td>Compute-heavy transformations</td><td><code>c5</code> / <code>c6i</code> (compute-optimized)</td><td>CPU-bound operations like sorting, hashing</td></tr>
+        <tr><td>ML training</td><td><code>p3</code> / <code>g4dn</code> (GPU)</td><td>Deep learning requires GPU cores</td></tr>
+        <tr><td>Large in-memory datasets</td><td><code>x1e</code> / <code>r6id</code></td><td>Very large memory per instance</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="spot-instances">Spot vs On-Demand Workers</h3>
+    <p>Spot instances are spare EC2 capacity sold at up to 90% discount. Databricks supports spot workers (not drivers) natively:</p>
+
+    <pre><code class="language-json">{
+  "driver_node_type_id": "r5.xlarge",
+  "node_type_id": "r5.4xlarge",
+  "aws_attributes": {
+    "availability": "SPOT_WITH_FALLBACK",
+    "spot_bid_price_percent": 100
+  }
+}</code></pre>
+
+    <p><code>SPOT_WITH_FALLBACK</code> is the right setting for most jobs: try spot first, fall back to on-demand if spot isn't available. Pure spot (<code>SPOT</code>) is risky &mdash; your job will fail if instances are reclaimed.</p>
+
+    <h3 id="autoscaling">Autoscaling</h3>
+    <p>Databricks autoscaling adds and removes workers based on pending tasks. It sounds great but has a subtle problem: Spark doesn't know how many workers it will have when planning a job. This leads to under-partitioned shuffles when workers scale up mid-job.</p>
+
+    <div class="callout warning">
+      <div class="callout-title">Autoscaling Trade-off</div>
+      <p>Enhanced autoscaling (available on Databricks-specific runtimes) is significantly better than basic autoscaling for this reason. Basic autoscaling can increase job duration because of re-partitioning overhead. For jobs with predictable data volumes, a fixed worker count is often faster and cheaper than autoscaling. Benchmark both for your use case before committing to autoscaling in production.</p>
+    </div>
+
+    <h2 id="storage">Storage: DBFS vs External Storage</h2>
+
+    <p>DBFS (Databricks File System) is a virtual file system mounted on top of your cloud storage. It makes S3 paths look like local filesystem paths:</p>
+
+    <pre><code class="language-python"># DBFS path (abstraction over S3)
+df = spark.read.parquet("dbfs:/mnt/my-bucket/data/")
+
+# Direct S3 path (requires configured access)
+df = spark.read.parquet("s3://my-bucket/data/")
+
+# Unity Catalog Volume path (preferred in modern Databricks)
+df = spark.read.parquet("/Volumes/catalog/schema/volume/data/")</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">DBFS Mounts Are Deprecated</div>
+      <p>The old pattern of mounting S3 buckets to DBFS with <code>dbutils.fs.mount()</code> is deprecated in Unity Catalog workspaces. The modern approach is <strong>External Locations</strong> in Unity Catalog (Chapter 11) and <strong>Volumes</strong> for unstructured data. Avoid creating new mounts &mdash; migrate existing ones when you adopt Unity Catalog.</p>
+    </div>
+
+    <h3 id="dbfs-root">What Lives in DBFS Root</h3>
+    <p>The DBFS root (<code>dbfs:/</code>) maps to a Databricks-managed S3 bucket in your AWS account. You should treat it as scratch space only. User data, Delta tables, and anything you care about should live in your own S3 buckets, accessed via Unity Catalog External Locations.</p>
+
+    <table>
+      <thead>
+        <tr><th>Path Type</th><th>Example</th><th>Use For</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>DBFS root</td><td><code>dbfs:/tmp/</code>, <code>dbfs:/user/</code></td><td>Temporary files, local scratch — not production data</td></tr>
+        <tr><td>DBFS mount (deprecated)</td><td><code>dbfs:/mnt/my-bucket/</code></td><td>Legacy access to S3; avoid in new workspaces</td></tr>
+        <tr><td>Direct S3</td><td><code>s3://my-bucket/path/</code></td><td>Direct access with instance profile auth</td></tr>
+        <tr><td>Unity Catalog Volume</td><td><code>/Volumes/catalog/schema/vol/</code></td><td>Files and unstructured data in UC</td></tr>
+        <tr><td>UC External Table</td><td><code>catalog.schema.table</code></td><td>Delta tables at external S3 locations</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="spark-ui">The Spark UI: Your First Debugging Tool</h2>
+
+    <p>Every Databricks cluster has a Spark UI accessible from the cluster detail page. It's the most important performance debugging tool you have:</p>
+
+    <ul>
+      <li><strong>Jobs tab</strong> &mdash; every action (collect, write, count) creates a job; shows duration and stage breakdown</li>
+      <li><strong>Stages tab</strong> &mdash; each stage is a set of tasks separated by a shuffle; shows spill and GC metrics</li>
+      <li><strong>SQL/DataFrame tab</strong> &mdash; visualized query plan with stage timings</li>
+      <li><strong>Storage tab</strong> &mdash; cached DataFrames/tables, memory usage</li>
+      <li><strong>Executors tab</strong> &mdash; per-executor memory, task time, GC overhead, shuffle read/write</li>
+    </ul>
+
+    <div class="callout info">
+      <div class="callout-title">Actions vs Transformations</div>
+      <p>Transformations (<code>filter</code>, <code>select</code>, <code>join</code>) are lazy &mdash; they build a logical plan without executing anything. Actions (<code>count</code>, <code>collect</code>, <code>show</code>, <code>write</code>) trigger actual execution. This is why you see one Spark job per action in the Spark UI, not one per transformation. Understanding this distinction is the single most important concept for reasoning about Spark performance.</p>
+    </div>
+
+    <div class="quiz" data-correct="2">
+      <div class="quiz-title">Quick Check</div>
+      <p class="quiz-question">You have a job cluster with 10 spot workers running a 4-hour ETL job. Two hours in, AWS reclaims 3 spot instances. What happens?</p>
+      <ul class="quiz-options">
+        <li>The job fails immediately</li>
+        <li>The job pauses until replacement instances are available</li>
+        <li>Databricks provisions replacement instances and the job continues, possibly slower</li>
+        <li>The driver node takes over and runs the job single-threaded</li>
+      </ul>
+      <button class="quiz-btn">Check Answer</button>
+      <div class="quiz-answer">
+        <strong>Databricks provisions replacements and continues.</strong> With <code>SPOT_WITH_FALLBACK</code>, Databricks automatically requests replacement instances. Tasks that were running on reclaimed instances are rescheduled. There may be a performance dip while new instances initialize, but the job does not fail. If you use pure <code>SPOT</code> and AWS can't provide replacements quickly, the job may stall or fail.
+      </div>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Identify your cluster type.</strong> In your Databricks workspace, open the Compute tab. For each cluster listed, determine whether it's an all-purpose, job (attached to a job), or SQL warehouse cluster. Check when each was last used and whether auto-termination is configured.</li>
+        <li><strong>Read the Spark UI.</strong> Run a simple <code>df.groupBy("some_col").count().show()</code> on a real DataFrame. Open the Spark UI and identify: how many stages did it create? Was there a shuffle? How many tasks ran per stage?</li>
+        <li><strong>Driver vs executor exercise.</strong> Create a list of 1,000 integers in Python and add each to a Spark DataFrame using a loop vs using <code>spark.createDataFrame()</code>. Compare the execution time. Why is the loop approach slower even though both run on the same hardware?</li>
+        <li><strong>Estimate cluster cost.</strong> Find the DBU rate for your cluster's instance type and runtime. Estimate the hourly cost for your dev cluster assuming it runs 8 hours/day for a month. Now add auto-termination at 30 minutes idle and re-estimate.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="index.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">Home</span>
+      </a>
+      <a href="ch02-notebooks.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">2. Notebooks &amp; Dev Patterns</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

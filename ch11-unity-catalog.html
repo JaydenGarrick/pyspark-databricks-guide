@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 11: Unity Catalog | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html" class="active">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 11</div>
+      <h1>Unity Catalog</h1>
+      <p class="chapter-subtitle">The three-level namespace, data governance, grants, row-level security, and lineage. Unity Catalog is the biggest platform change in Databricks in years.</p>
+    </div>
+
+    <h2 id="namespace">The Three-Level Namespace</h2>
+
+    <p>Before Unity Catalog, Databricks used a two-level namespace: <code>schema.table</code> (or <code>database.table</code>). Unity Catalog adds a top-level <code>catalog</code>:</p>
+
+    <pre><code class="language-sql">-- Legacy (Hive metastore): two levels
+SELECT * FROM my_database.orders;
+
+-- Unity Catalog: three levels
+SELECT * FROM catalog_name.schema_name.table_name;
+
+-- Set a default catalog so you don't have to type it
+USE CATALOG my_catalog;
+USE SCHEMA bronze;
+
+-- Now these are equivalent
+SELECT * FROM orders;
+SELECT * FROM bronze.orders;
+SELECT * FROM my_catalog.bronze.orders;</code></pre>
+
+    <p>A typical catalog structure for a data platform:</p>
+
+    <div class="file-tree">
+      <span class="dir">prod_catalog/</span><br>
+      &nbsp;&nbsp;<span class="dir">bronze/</span> &larr; raw ingested data<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">orders_raw</span>, <span class="highlight">customers_raw</span>, <span class="highlight">events_raw</span><br>
+      &nbsp;&nbsp;<span class="dir">silver/</span> &larr; cleaned, validated<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">orders</span>, <span class="highlight">customers</span>, <span class="highlight">products</span><br>
+      &nbsp;&nbsp;<span class="dir">gold/</span> &larr; business-ready aggregations<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">revenue_daily</span>, <span class="highlight">customer_ltv</span>, <span class="highlight">funnel_metrics</span><br>
+      &nbsp;&nbsp;<span class="dir">monitoring/</span> &larr; pipeline health<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">pipeline_runs</span>, <span class="highlight">data_quality_results</span>
+    </div>
+
+    <h2 id="grants">Grants and Permissions</h2>
+
+    <pre><code class="language-sql">-- Grant access to a schema
+GRANT USE SCHEMA ON SCHEMA prod_catalog.gold TO `data-analysts@company.com`;
+GRANT SELECT ON SCHEMA prod_catalog.gold TO `data-analysts@company.com`;
+
+-- Grant access to a specific table only
+GRANT SELECT ON TABLE prod_catalog.gold.revenue_daily TO `analyst-team`;
+
+-- Grant write access (for ETL service accounts)
+GRANT MODIFY ON SCHEMA prod_catalog.silver TO `etl-service-account`;
+GRANT CREATE ON SCHEMA prod_catalog.silver TO `etl-service-account`;
+
+-- Grant at the catalog level (all schemas)
+GRANT USE CATALOG ON CATALOG prod_catalog TO `data-engineers`;
+
+-- View existing grants
+SHOW GRANTS ON TABLE prod_catalog.silver.orders;
+
+-- Revoke
+REVOKE SELECT ON TABLE prod_catalog.bronze.orders FROM `analyst-team`;</code></pre>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>With the legacy Hive metastore, access control was typically handled at the cluster level (attach to a cluster, you can access everything). Unity Catalog shifts to fine-grained, table-level access control enforced centrally. The same permissions apply whether you access data through a notebook, a SQL warehouse, or a job. This is the main reason enterprises migrate to Unity Catalog.</p>
+    </div>
+
+    <h2 id="row-filters">Row-Level Security with Row Filters</h2>
+
+    <p>Row filters restrict which rows a user can see without changing the query. They're applied transparently whenever the table is queried:</p>
+
+    <pre><code class="language-sql">-- Create a function that filters based on current_user()
+CREATE FUNCTION prod_catalog.security.orders_region_filter(region_col STRING)
+RETURN IF(
+    IS_ACCOUNT_GROUP_MEMBER('global-data-team'),
+    true,
+    region_col = current_user_region()  -- custom function that returns user's region
+);
+
+-- Apply the row filter to a table
+ALTER TABLE prod_catalog.silver.orders
+SET ROW FILTER prod_catalog.security.orders_region_filter ON (region);
+
+-- Now US analysts only see US rows, EU analysts only see EU rows
+-- Global-data-team members see everything
+SELECT * FROM prod_catalog.silver.orders;
+-- Automatically filtered based on the querying user</code></pre>
+
+    <h2 id="column-masking">Column Masking</h2>
+
+    <pre><code class="language-sql">-- Create a masking function
+CREATE FUNCTION prod_catalog.security.mask_email(email STRING)
+RETURN IF(
+    IS_ACCOUNT_GROUP_MEMBER('pii-access-team'),
+    email,
+    CONCAT(LEFT(email, 2), '****@****.com')
+);
+
+-- Apply column mask
+ALTER TABLE prod_catalog.silver.customers
+ALTER COLUMN email SET MASK prod_catalog.security.mask_email;
+
+-- PII team sees: john.doe@company.com
+-- Others see:    jo****@****.com</code></pre>
+
+    <h2 id="external-locations">External Locations</h2>
+
+    <p>External locations are the Unity Catalog replacement for DBFS mounts. They give named access to S3 paths with IAM-controlled permissions:</p>
+
+    <pre><code class="language-sql">-- Create a storage credential (once per AWS account, done by admin)
+CREATE STORAGE CREDENTIAL prod_s3_credential
+WITH IAM_ROLE 'arn:aws:iam::123456789:role/databricks-prod-role';
+
+-- Create an external location pointing to S3
+CREATE EXTERNAL LOCATION prod_data
+URL 's3://my-prod-bucket/data/'
+WITH (STORAGE CREDENTIAL prod_s3_credential);
+
+-- Create a table at an external location
+CREATE TABLE prod_catalog.bronze.orders_raw
+LOCATION 's3://my-prod-bucket/data/orders/raw/'
+USING DELTA;
+
+-- Or create a Volume for unstructured files
+CREATE VOLUME prod_catalog.bronze.raw_files
+LOCATION 's3://my-prod-bucket/data/raw-files/';</code></pre>
+
+    <pre><code class="language-python"># Access files via Volume path (no mounts needed)
+df = spark.read.json("/Volumes/prod_catalog/bronze/raw_files/orders/2024/01/")
+
+# Write to a Volume
+df.write.format("json").save("/Volumes/prod_catalog/bronze/raw_files/processed/")</code></pre>
+
+    <h2 id="lineage">Data Lineage</h2>
+
+    <p>Unity Catalog automatically tracks lineage: which tables were read/written by which queries and jobs. Access via the Catalog Explorer or programmatically:</p>
+
+    <pre><code class="language-python"># Lineage is available in the Catalog Explorer UI
+# Programmatic access via the Databricks SDK
+from databricks.sdk import WorkspaceClient
+
+w = WorkspaceClient()
+
+# Get table lineage (upstream sources)
+lineage = w.data_lineage.get_table_lineage(
+    table_name="prod_catalog.gold.revenue_daily"
+)
+for upstream in lineage.upstreams:
+    print(f"Source: {upstream.table_info.full_name}")</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Lineage Limitations</div>
+      <p>Lineage is tracked for SQL queries run on Databricks compute attached to Unity Catalog. It doesn't track operations done via direct S3 access outside Databricks, JDBC connections, or older workspaces not on Unity Catalog. Column-level lineage is supported for direct column references but not computed expressions.</p>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Namespace migration.</strong> If you have any tables in the legacy Hive metastore (<code>database.table</code>), write a migration plan to move them to Unity Catalog. What's the <code>SYNC</code> command? What needs to change in your notebook paths?</li>
+        <li><strong>Design a permission model.</strong> Your team has: data engineers (read/write all layers), analysts (read gold only), external partners (read one specific gold table). Write the GRANT statements to implement this in Unity Catalog.</li>
+        <li><strong>Implement a row filter.</strong> Create a table with a <code>country</code> column. Write a row filter function that returns all rows if the user is in a 'global-access' group, otherwise only rows matching a hardcoded test country. Verify it works by querying as different users (or groups).</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch10-workflows.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">10. Workflows &amp; Orchestration</span>
+      </a>
+      <a href="ch12-aws-integration.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">12. AWS Integration</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

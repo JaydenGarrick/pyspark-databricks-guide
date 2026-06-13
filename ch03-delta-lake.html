@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 3: Delta Lake | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html" class="active">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 3</div>
+      <h1>Delta Lake</h1>
+      <p class="chapter-subtitle">Parquet, but with a transaction log. ACID guarantees, time travel, upserts, and schema evolution on top of object storage.</p>
+    </div>
+
+    <h2 id="the-problem">The Problem with Parquet</h2>
+
+    <p>Parquet is a great columnar storage format. But it's just a file format &mdash; it has no concept of transactions, schema enforcement, or atomicity. This causes real problems:</p>
+
+    <ul>
+      <li><strong>Partial writes:</strong> If a job fails halfway through writing, you get a corrupt dataset with some new files and some old files mixed together.</li>
+      <li><strong>No upserts:</strong> To update records in Parquet, you rewrite the entire table. There's no way to update one row without reading and rewriting everything.</li>
+      <li><strong>Schema drift:</strong> Nothing stops a job from writing a DataFrame with a different schema. Readers silently get null columns or cast errors.</li>
+      <li><strong>Read-write conflicts:</strong> Concurrent writers produce undefined behavior. One writer can corrupt another's output.</li>
+    </ul>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>You may have used <code>df.write.mode("overwrite").parquet("/path")</code> extensively. Delta Lake replaces this pattern. Instead of managing files yourself, you manage <strong>tables</strong>. Delta handles atomicity, versioning, and optimization automatically. The trade-off is a metadata overhead (~1-2% of table size for the transaction log) and some added complexity for advanced features.</p>
+    </div>
+
+    <h2 id="architecture">Delta Lake Architecture: The Transaction Log</h2>
+
+    <p>Delta Lake adds a <code>_delta_log/</code> directory alongside your Parquet files. This directory contains JSON transaction log files (one per commit) that record every operation on the table:</p>
+
+    <div class="file-tree">
+      <span class="dir">my_table/</span><br>
+      &nbsp;&nbsp;<span class="dir">_delta_log/</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">00000000000000000000.json</span> &larr; initial create<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">00000000000000000001.json</span> &larr; first insert<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">00000000000000000002.json</span> &larr; second insert<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">00000000000000000010.checkpoint.parquet</span> &larr; checkpoint every 10 commits<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="highlight">00000000000000000011.json</span><br>
+      &nbsp;&nbsp;<span class="dir">part-00000-abc.snappy.parquet</span><br>
+      &nbsp;&nbsp;<span class="dir">part-00001-def.snappy.parquet</span>
+    </div>
+
+    <p>Each JSON log entry records which files were added and removed, the schema, statistics for each file (min/max values per column), and the operation type. This log is what enables ACID guarantees, time travel, and optimistic concurrency control.</p>
+
+    <h2 id="creating-tables">Creating Delta Tables</h2>
+
+    <div class="comparison">
+      <div class="lang-col">
+        <div class="lang-label pyspark">Basic PySpark (Parquet)</div>
+        <pre><code class="language-python"># Write
+df.write \
+  .mode("overwrite") \
+  .parquet("s3://bucket/my-table/")
+
+# Read
+df = spark.read \
+  .parquet("s3://bucket/my-table/")</code></pre>
+      </div>
+      <div class="lang-col">
+        <div class="lang-label databricks">Delta Lake</div>
+        <pre><code class="language-python"># Write (as managed table in Unity Catalog)
+df.write \
+  .format("delta") \
+  .mode("overwrite") \
+  .saveAsTable("catalog.schema.my_table")
+
+# Or as external table at a path
+df.write \
+  .format("delta") \
+  .mode("overwrite") \
+  .save("s3://bucket/my-table/")
+
+# Read a Delta table
+df = spark.read.format("delta") \
+  .load("s3://bucket/my-table/")
+# or by name
+df = spark.table("catalog.schema.my_table")</code></pre>
+      </div>
+    </div>
+
+    <p>Using SQL is often cleaner for table creation:</p>
+
+    <pre><code class="language-sql">-- Create an empty Delta table with explicit schema
+CREATE TABLE catalog.schema.orders (
+    order_id    STRING NOT NULL,
+    customer_id STRING,
+    amount      DECIMAL(10,2),
+    status      STRING,
+    created_at  TIMESTAMP
+)
+USING DELTA
+COMMENT 'Raw orders from the e-commerce platform'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true'
+);
+
+-- Create Delta table from a SELECT
+CREATE TABLE catalog.schema.orders_us
+USING DELTA
+AS SELECT * FROM catalog.schema.orders WHERE country = 'US';</code></pre>
+
+    <h2 id="time-travel">Time Travel</h2>
+
+    <p>Every write to a Delta table creates a new version. You can read any historical version:</p>
+
+    <pre><code class="language-python">from delta.tables import DeltaTable
+
+# View the table's history
+dt = DeltaTable.forName(spark, "catalog.schema.orders")
+dt.history().show(truncate=False)
+
+# Read a specific version (version number from history)
+df_v5 = spark.read.format("delta") \
+    .option("versionAsOf", 5) \
+    .table("catalog.schema.orders")
+
+# Read as of a specific timestamp
+df_yesterday = spark.read.format("delta") \
+    .option("timestampAsOf", "2024-01-14 00:00:00") \
+    .table("catalog.schema.orders")</code></pre>
+
+    <p>In SQL:</p>
+
+    <pre><code class="language-sql">-- Read version 5
+SELECT * FROM catalog.schema.orders VERSION AS OF 5;
+
+-- Read as of a timestamp
+SELECT * FROM catalog.schema.orders
+TIMESTAMP AS OF '2024-01-14T00:00:00.000Z';
+
+-- Describe the history
+DESCRIBE HISTORY catalog.schema.orders;</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Time Travel Retention</div>
+      <p>Historical versions are retained until you run <code>VACUUM</code>. The default retention period is 7 days (<code>delta.deletedFileRetentionDuration = 'interval 7 days'</code>). Increase this for audit requirements, but know that longer retention means more storage cost. You cannot time-travel beyond the retention window &mdash; the old Parquet files have been deleted by VACUUM.</p>
+    </div>
+
+    <h2 id="merge">MERGE INTO &mdash; Upserts and CDC</h2>
+
+    <p><code>MERGE INTO</code> is the single most powerful Delta Lake operation. It enables CDC (Change Data Capture) patterns, SCD Type 1/2, and incremental loads without full table rewrites:</p>
+
+    <pre><code class="language-python">from delta.tables import DeltaTable
+
+target = DeltaTable.forName(spark, "catalog.silver.customers")
+
+# Incoming changes (new or updated records)
+updates_df = spark.table("catalog.bronze.customer_updates")
+
+target.alias("tgt").merge(
+    updates_df.alias("src"),
+    condition="tgt.customer_id = src.customer_id"
+).whenMatchedUpdate(set={
+    "email":      "src.email",
+    "name":       "src.name",
+    "updated_at": "src.updated_at"
+}).whenNotMatchedInsert(values={
+    "customer_id": "src.customer_id",
+    "email":       "src.email",
+    "name":        "src.name",
+    "created_at":  "src.created_at",
+    "updated_at":  "src.updated_at"
+}).execute()</code></pre>
+
+    <p>The SQL equivalent is often more readable:</p>
+
+    <pre><code class="language-sql">MERGE INTO catalog.silver.customers AS tgt
+USING catalog.bronze.customer_updates AS src
+ON tgt.customer_id = src.customer_id
+
+WHEN MATCHED THEN UPDATE SET
+    tgt.email      = src.email,
+    tgt.name       = src.name,
+    tgt.updated_at = src.updated_at
+
+WHEN NOT MATCHED THEN INSERT (
+    customer_id, email, name, created_at, updated_at
+) VALUES (
+    src.customer_id, src.email, src.name, src.created_at, src.updated_at
+)
+
+-- Optional: delete records marked as deleted in the source
+WHEN MATCHED AND src.is_deleted = true THEN DELETE;</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">MERGE Performance Considerations</div>
+      <p>MERGE is powerful but expensive. It reads the target table to find matching rows, which can be a full scan without proper partitioning or Z-ordering. For large tables, always ensure the merge key column is either a partition column or Z-ordered. A poorly designed MERGE on a 1TB table can take hours. See Chapter 7 (Data Layout) for how to optimize for MERGE workloads.</p>
+    </div>
+
+    <h2 id="optimize">OPTIMIZE and VACUUM</h2>
+
+    <p>Delta tables accumulate small files over time from frequent writes (especially streaming or incremental loads). <code>OPTIMIZE</code> compacts them:</p>
+
+    <pre><code class="language-sql">-- Compact small files (default target: 1GB per file)
+OPTIMIZE catalog.silver.orders;
+
+-- Compact a specific partition only
+OPTIMIZE catalog.silver.orders
+WHERE event_date = '2024-01-15';
+
+-- Compact AND apply Z-Order clustering on a column
+OPTIMIZE catalog.silver.orders
+ZORDER BY (customer_id);</code></pre>
+
+    <pre><code class="language-python"># Python equivalent
+from delta.tables import DeltaTable
+
+dt = DeltaTable.forName(spark, "catalog.silver.orders")
+dt.optimize().executeCompaction()
+
+# With Z-Order
+dt.optimize().executeZOrderBy("customer_id")</code></pre>
+
+    <p>After OPTIMIZE, old small files are no longer active but still exist on disk until VACUUM removes them:</p>
+
+    <pre><code class="language-sql">-- Remove files older than the retention period (default 7 days)
+VACUUM catalog.silver.orders;
+
+-- Override retention (minimum 0 hours — dangerous, breaks time travel)
+-- The 168-hour check can be disabled, but don't do this in production
+VACUUM catalog.silver.orders RETAIN 168 HOURS;</code></pre>
+
+    <div class="callout drawback">
+      <div class="callout-title">VACUUM and Time Travel</div>
+      <p>Running <code>VACUUM</code> permanently deletes historical Parquet files. After VACUUM, you cannot time-travel to versions before the retention window. If your team relies on time travel for auditing or debugging, be very deliberate about when and how often you VACUUM. A common pattern: VACUUM weekly with 30-day retention for production audit tables.</p>
+    </div>
+
+    <h2 id="schema-evolution">Schema Evolution and Enforcement</h2>
+
+    <p>By default, Delta enforces schema: writing a DataFrame with an unexpected column fails. You can relax this with schema evolution:</p>
+
+    <pre><code class="language-python"># This fails if df has columns not in the table schema (default behavior)
+df.write.format("delta").mode("append").saveAsTable("catalog.silver.orders")
+
+# Enable schema evolution: adds new columns automatically
+df.write \
+    .format("delta") \
+    .mode("append") \
+    .option("mergeSchema", "true") \
+    .saveAsTable("catalog.silver.orders")
+
+# For MERGE operations, enable schema evolution at the session level
+spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")</code></pre>
+
+    <p>Or enable it as a table property:</p>
+
+    <pre><code class="language-sql">ALTER TABLE catalog.silver.orders
+SET TBLPROPERTIES ('delta.columnMapping.mode' = 'name');
+
+-- Add a column without rewriting the table
+ALTER TABLE catalog.silver.orders
+ADD COLUMN loyalty_tier STRING AFTER customer_id;
+
+-- Rename a column (requires column mapping enabled)
+ALTER TABLE catalog.silver.orders
+RENAME COLUMN loyalty_tier TO customer_tier;</code></pre>
+
+    <h2 id="change-data-feed">Change Data Feed (CDF)</h2>
+
+    <p>CDF lets downstream consumers read only the rows that changed since their last read — inserts, updates, and deletes — without scanning the full table:</p>
+
+    <pre><code class="language-sql">-- Enable CDF on a table
+ALTER TABLE catalog.silver.orders
+SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
+
+-- Read all changes since version 10
+SELECT * FROM table_changes('catalog.silver.orders', 10)
+ORDER BY _commit_version, _commit_timestamp;</code></pre>
+
+    <pre><code class="language-python"># Read changes since a specific version
+changes = spark.read.format("delta") \
+    .option("readChangeFeed", "true") \
+    .option("startingVersion", 10) \
+    .table("catalog.silver.orders")
+
+# The result includes _change_type: 'insert', 'update_preimage',
+# 'update_postimage', 'delete'
+changes.filter("_change_type = 'insert'").display()</code></pre>
+
+    <div class="callout success">
+      <div class="callout-title">What You Practiced</div>
+      <ul>
+        <li><strong>Delta architecture</strong> &mdash; transaction log, how ACID works on object storage</li>
+        <li><strong>Table creation</strong> &mdash; <code>saveAsTable</code>, <code>CREATE TABLE ... USING DELTA</code></li>
+        <li><strong>Time travel</strong> &mdash; <code>VERSION AS OF</code>, <code>TIMESTAMP AS OF</code>, <code>DESCRIBE HISTORY</code></li>
+        <li><strong>MERGE INTO</strong> &mdash; upserts, CDC, SCD patterns</li>
+        <li><strong>OPTIMIZE + VACUUM</strong> &mdash; compaction, Z-ordering, retention</li>
+        <li><strong>Schema evolution</strong> &mdash; enforcement vs <code>mergeSchema</code>, column operations</li>
+        <li><strong>Change Data Feed</strong> &mdash; incremental downstream consumption</li>
+      </ul>
+    </div>
+
+    <div class="quiz" data-correct="1">
+      <div class="quiz-title">Quick Check</div>
+      <p class="quiz-question">You run <code>VACUUM catalog.silver.orders RETAIN 0 HOURS</code>. What happens to time travel?</p>
+      <ul class="quiz-options">
+        <li>Time travel still works for versions created today</li>
+        <li>All historical Parquet files are deleted; you can no longer time-travel to any prior version</li>
+        <li>VACUUM fails because the minimum retention is 24 hours</li>
+        <li>Time travel works but only for the current version</li>
+      </ul>
+      <button class="quiz-btn">Check Answer</button>
+      <div class="quiz-answer">
+        <strong>All historical files are deleted.</strong> <code>RETAIN 0 HOURS</code> removes all files not referenced by the current table version. You lose all time travel capability for this table. Databricks normally prevents this with a safety check (<code>spark.databricks.delta.retentionDurationCheck.enabled</code>), but if overridden, it's permanent. The minimum enforced by the safety check is 168 hours (7 days).
+      </div>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Create a Delta table from scratch.</strong> Using SQL, create a Delta table with at least 5 columns. Insert 100+ rows using <code>INSERT INTO ... VALUES</code> or a CTAS (<code>CREATE TABLE ... AS SELECT</code>). Run <code>DESCRIBE HISTORY</code> and <code>DESCRIBE DETAIL</code> &mdash; understand every field in the output.</li>
+        <li><strong>Implement a MERGE pattern.</strong> Create a "source" DataFrame with 50 rows: 30 that already exist in your target table (updates) and 20 that are new (inserts). Write and execute a MERGE statement. Verify the result count and that updated rows reflect the new values.</li>
+        <li><strong>Break and fix a schema.</strong> Write a DataFrame with an extra column not in your Delta table's schema. Observe the error. Then re-run with <code>mergeSchema=true</code>. Inspect the updated schema with <code>DESCRIBE TABLE</code>.</li>
+        <li><strong>Time travel debugging.</strong> Write three batches of data to a Delta table (simulating three daily loads). Run <code>DESCRIBE HISTORY</code> to see three versions. Now read version 1 using time travel and confirm the row count matches your first batch only.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch02-notebooks.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">2. Notebooks &amp; Dev Patterns</span>
+      </a>
+      <a href="ch04-window-functions.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">4. Window Functions &amp; Analytics</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

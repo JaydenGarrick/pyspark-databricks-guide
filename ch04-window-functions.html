@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 4: Window Functions &amp; Analytics | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html" class="active">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 4</div>
+      <h1>Window Functions &amp; Analytics</h1>
+      <p class="chapter-subtitle">The most powerful and underused feature in Spark SQL. Every analytics query you've been solving with self-joins, you should have been solving with window functions.</p>
+    </div>
+
+    <h2 id="overview">What Is a Window Function?</h2>
+
+    <p>A window function computes a value for each row <em>relative to a set of rows defined by a window</em>. Unlike <code>GROUP BY</code> which collapses rows into a single aggregate, window functions keep all rows and add a computed column alongside them.</p>
+
+    <p>The canonical example: "for each order, what is the customer's cumulative spend up to this order?"</p>
+    <ul>
+      <li>With <code>GROUP BY</code>: impossible in one query &mdash; GROUP BY collapses all of a customer's orders into one row.</li>
+      <li>With a self-join: possible but expensive &mdash; join every order to all prior orders for the same customer.</li>
+      <li>With a window function: one pass, no join, elegant SQL.</li>
+    </ul>
+
+    <div class="callout pyspark-note">
+      <div class="callout-title">If You Know Basic PySpark</div>
+      <p>PySpark has window functions too &mdash; <code>from pyspark.sql import Window</code>. You may have written <code>w = Window.partitionBy("customer_id").orderBy("created_at")</code> and <code>df.withColumn("rn", F.row_number().over(w))</code>. This chapter covers the same concepts but shows the SQL syntax, which is often cleaner, plus Databricks-specific extensions like <code>QUALIFY</code> that don't exist in the PySpark API.</p>
+    </div>
+
+    <h2 id="over-clause">The OVER() Clause</h2>
+
+    <p>Every window function uses an <code>OVER()</code> clause that defines:</p>
+    <ul>
+      <li><code>PARTITION BY</code> &mdash; divides rows into groups (like GROUP BY, but doesn't collapse)</li>
+      <li><code>ORDER BY</code> &mdash; ordering within each partition (required for ranking, lag/lead, and cumulative aggregates)</li>
+      <li><code>ROWS/RANGE BETWEEN</code> &mdash; the window frame (which rows around the current row to include)</li>
+    </ul>
+
+    <pre><code class="language-sql">SELECT
+    order_id,
+    customer_id,
+    amount,
+    created_at,
+    -- The function goes BEFORE the OVER()
+    SUM(amount) OVER (
+        PARTITION BY customer_id      -- one window per customer
+        ORDER BY created_at           -- ordered chronologically
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  -- running total
+    ) AS cumulative_spend
+FROM orders;</code></pre>
+
+    <h2 id="ranking">Ranking Functions</h2>
+
+    <h3 id="row-number">ROW_NUMBER</h3>
+
+    <p>Assigns a unique sequential integer to each row within the partition. The most common use: deduplication.</p>
+
+    <div class="comparison">
+      <div class="lang-col">
+        <div class="lang-label sql">SQL</div>
+        <pre><code class="language-sql">SELECT *
+FROM (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY customer_id
+      ORDER BY created_at DESC
+    ) AS rn
+  FROM orders
+)
+WHERE rn = 1;
+-- Gets most recent order per customer</code></pre>
+      </div>
+      <div class="lang-col">
+        <div class="lang-label python">PySpark API</div>
+        <pre><code class="language-python">from pyspark.sql import Window
+import pyspark.sql.functions as F
+
+w = Window \
+  .partitionBy("customer_id") \
+  .orderBy(F.col("created_at").desc())
+
+df \
+  .withColumn("rn", F.row_number().over(w)) \
+  .filter(F.col("rn") == 1) \
+  .drop("rn")</code></pre>
+      </div>
+    </div>
+
+    <h3 id="rank-dense">RANK vs DENSE_RANK vs ROW_NUMBER</h3>
+
+    <p>These three functions look similar but handle ties differently:</p>
+
+    <pre><code class="language-sql">SELECT
+    player,
+    score,
+    ROW_NUMBER() OVER (ORDER BY score DESC) AS row_num,
+    RANK()       OVER (ORDER BY score DESC) AS rank,
+    DENSE_RANK() OVER (ORDER BY score DESC) AS dense_rank
+FROM leaderboard;</code></pre>
+
+    <table>
+      <thead>
+        <tr><th>Player</th><th>Score</th><th>ROW_NUMBER</th><th>RANK</th><th>DENSE_RANK</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Alice</td><td>100</td><td>1</td><td>1</td><td>1</td></tr>
+        <tr><td>Bob</td><td>100</td><td>2</td><td>1</td><td>1</td></tr>
+        <tr><td>Carol</td><td>85</td><td>3</td><td>3</td><td>2</td></tr>
+        <tr><td>Dave</td><td>70</td><td>4</td><td>4</td><td>3</td></tr>
+      </tbody>
+    </table>
+
+    <ul>
+      <li><strong>ROW_NUMBER</strong>: Always unique. Ties are broken arbitrarily. Use for deduplication.</li>
+      <li><strong>RANK</strong>: Ties get the same rank, then there's a gap (1,1,3,4). Use for "top N" where you want gaps.</li>
+      <li><strong>DENSE_RANK</strong>: Ties get the same rank, no gaps (1,1,2,3). Use for "top N" where you want no gaps.</li>
+    </ul>
+
+    <h3 id="ntile">NTILE</h3>
+
+    <p>Divides rows into N roughly equal buckets:</p>
+
+    <pre><code class="language-sql">SELECT
+    customer_id,
+    total_spent,
+    NTILE(4) OVER (ORDER BY total_spent DESC) AS spend_quartile
+FROM customer_summary;
+-- quartile 1 = top 25%, quartile 4 = bottom 25%</code></pre>
+
+    <h2 id="lag-lead">LAG and LEAD</h2>
+
+    <p>LAG and LEAD access values from other rows in the partition without a self-join. They're essential for period-over-period calculations:</p>
+
+    <pre><code class="language-sql">SELECT
+    event_date,
+    daily_revenue,
+    -- Previous day's revenue
+    LAG(daily_revenue, 1, 0) OVER (ORDER BY event_date) AS prev_day_revenue,
+    -- Next day's revenue
+    LEAD(daily_revenue, 1, 0) OVER (ORDER BY event_date) AS next_day_revenue,
+    -- Day-over-day change
+    daily_revenue - LAG(daily_revenue, 1, 0) OVER (ORDER BY event_date) AS dod_change,
+    -- % change (NULL safe)
+    ROUND(
+        (daily_revenue - LAG(daily_revenue) OVER (ORDER BY event_date))
+        / NULLIF(LAG(daily_revenue) OVER (ORDER BY event_date), 0) * 100,
+        2
+    ) AS dod_pct_change
+FROM daily_revenue;</code></pre>
+
+    <p>LAG/LEAD signature: <code>LAG(expr, offset, default)</code></p>
+    <ul>
+      <li><code>expr</code> &mdash; the column to look back at</li>
+      <li><code>offset</code> &mdash; how many rows to look back (default 1)</li>
+      <li><code>default</code> &mdash; value when there's no prior row (default NULL)</li>
+    </ul>
+
+    <div class="callout info">
+      <div class="callout-title">Week-over-Week with LAG</div>
+      <p>For weekly comparisons, use <code>LAG(metric, 7)</code> if you have daily data, or partition by week number. For monthly comparisons in a table that has daily rows, partition by <code>DATE_TRUNC('month', event_date)</code> and use <code>LAG(metric, 1)</code> within those partitions. Match your granularity to your LAG offset.</p>
+    </div>
+
+    <h2 id="aggregate-windows">Aggregate Window Functions</h2>
+
+    <p>Any aggregate function (<code>SUM</code>, <code>AVG</code>, <code>COUNT</code>, <code>MIN</code>, <code>MAX</code>) can be used with <code>OVER()</code>:</p>
+
+    <pre><code class="language-sql">SELECT
+    order_id,
+    customer_id,
+    amount,
+    -- Running total per customer
+    SUM(amount) OVER (
+        PARTITION BY customer_id
+        ORDER BY created_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS running_total,
+
+    -- Rolling 7-day average
+    AVG(amount) OVER (
+        PARTITION BY customer_id
+        ORDER BY created_at
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) AS rolling_7day_avg,
+
+    -- Total for the entire partition (no ORDER BY = entire partition)
+    SUM(amount) OVER (PARTITION BY customer_id) AS customer_total,
+
+    -- % of customer's total this order represents
+    ROUND(amount / SUM(amount) OVER (PARTITION BY customer_id) * 100, 2) AS pct_of_total,
+
+    -- Running count
+    COUNT(*) OVER (
+        PARTITION BY customer_id
+        ORDER BY created_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS order_number
+FROM orders;</code></pre>
+
+    <h2 id="window-frames">Window Frames: ROWS vs RANGE</h2>
+
+    <p>The frame clause defines which rows to include relative to the current row. This is the most nuanced part of window functions:</p>
+
+    <pre><code class="language-sql">-- ROWS frame: physical rows relative to current
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW   -- all prior rows through current
+ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING           -- 2 rows before through 2 after
+ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING  -- entire partition
+
+-- RANGE frame: logical rows with same ORDER BY value (handles ties)
+RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  -- includes rows with same value
+RANGE BETWEEN INTERVAL '7' DAYS PRECEDING AND CURRENT ROW  -- 7-day range window</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">ROWS vs RANGE: Tie Handling</div>
+      <p>When you use <code>ORDER BY</code> without a frame clause, Spark defaults to <code>RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code>. For <code>SUM</code>, this means tied rows all get the same running total (all ties are summed together). If you want strict per-row running totals, use <code>ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code>. For most use cases, <code>ROWS</code> is what you actually want.</p>
+    </div>
+
+    <h2 id="qualify">QUALIFY: Filtering on Window Results</h2>
+
+    <p><code>QUALIFY</code> is a Databricks/Spark SQL clause (Spark 3.3+) that filters on the result of a window function &mdash; without needing a subquery. It's one of the most useful extensions over standard SQL and dramatically simplifies deduplication queries:</p>
+
+    <div class="comparison">
+      <div class="lang-col">
+        <div class="lang-label sql">Without QUALIFY (standard SQL)</div>
+        <pre><code class="language-sql">-- Need a subquery to filter on window result
+SELECT * FROM (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY customer_id
+      ORDER BY created_at DESC
+    ) AS rn
+  FROM orders
+)
+WHERE rn = 1;</code></pre>
+      </div>
+      <div class="lang-col">
+        <div class="lang-label databricks">With QUALIFY (Databricks/Spark SQL)</div>
+        <pre><code class="language-sql">-- QUALIFY filters on the window result directly
+-- No subquery needed, no aliasing
+SELECT *
+FROM orders
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY customer_id
+  ORDER BY created_at DESC
+) = 1;</code></pre>
+      </div>
+    </div>
+
+    <p>QUALIFY is especially powerful for multi-condition deduplication:</p>
+
+    <pre><code class="language-sql">-- Get top 3 orders per customer by amount, but only for active customers
+SELECT
+    customer_id,
+    order_id,
+    amount,
+    status
+FROM orders
+JOIN customers USING (customer_id)
+WHERE customers.is_active = true
+  AND orders.status != 'cancelled'
+QUALIFY RANK() OVER (
+    PARTITION BY orders.customer_id
+    ORDER BY amount DESC
+) <= 3;</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">QUALIFY Execution Order</div>
+      <p>SQL clauses execute in this order: <code>FROM</code> → <code>WHERE</code> → <code>GROUP BY</code> → <code>HAVING</code> → window functions → <code>QUALIFY</code> → <code>SELECT</code> → <code>ORDER BY</code> → <code>LIMIT</code>. This means QUALIFY can reference window functions computed in the SELECT list, and it applies after WHERE (pre-aggregation filtering). Think of QUALIFY as "HAVING, but for window functions."</p>
+    </div>
+
+    <h2 id="named-windows">Named Windows</h2>
+
+    <p>If you use the same window definition multiple times, define it once with a <code>WINDOW</code> clause:</p>
+
+    <pre><code class="language-sql">SELECT
+    order_id,
+    customer_id,
+    amount,
+    ROW_NUMBER()  OVER w AS rn,
+    RANK()        OVER w AS rank,
+    SUM(amount)   OVER w AS running_total,
+    AVG(amount)   OVER w AS running_avg
+FROM orders
+WINDOW w AS (
+    PARTITION BY customer_id
+    ORDER BY created_at
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+);</code></pre>
+
+    <p>Named windows can also be extended:</p>
+
+    <pre><code class="language-sql">SELECT
+    order_id,
+    customer_id,
+    amount,
+    SUM(amount) OVER cust_win         AS customer_running_total,
+    SUM(amount) OVER (cust_win ORDER BY created_at) AS ordered_running_total
+FROM orders
+WINDOW cust_win AS (PARTITION BY customer_id);</code></pre>
+
+    <h2 id="practical-patterns">Practical Patterns</h2>
+
+    <h3 id="cohort">Cohort Analysis</h3>
+
+    <pre><code class="language-sql">-- Assign each customer to an acquisition cohort (first order month)
+-- then calculate retention by cohort
+WITH cohorts AS (
+    SELECT
+        customer_id,
+        DATE_TRUNC('month', MIN(created_at)) AS cohort_month
+    FROM orders
+    GROUP BY customer_id
+),
+customer_activity AS (
+    SELECT
+        o.customer_id,
+        c.cohort_month,
+        DATE_TRUNC('month', o.created_at) AS activity_month,
+        DATEDIFF(MONTH,
+            c.cohort_month,
+            DATE_TRUNC('month', o.created_at)
+        ) AS months_since_acquisition
+    FROM orders o
+    JOIN cohorts c USING (customer_id)
+)
+SELECT
+    cohort_month,
+    months_since_acquisition,
+    COUNT(DISTINCT customer_id) AS active_customers,
+    ROUND(
+        COUNT(DISTINCT customer_id) * 100.0
+        / FIRST_VALUE(COUNT(DISTINCT customer_id)) OVER (
+            PARTITION BY cohort_month
+            ORDER BY months_since_acquisition
+        ),
+        1
+    ) AS retention_rate_pct
+FROM customer_activity
+GROUP BY cohort_month, months_since_acquisition
+ORDER BY cohort_month, months_since_acquisition;</code></pre>
+
+    <h3 id="dedup-latest">Keep Latest Row Per Key</h3>
+
+    <pre><code class="language-sql">-- Deduplicate a CDC stream: keep only the most recent record per ID
+-- This is one of the most common operations in Silver-layer processing
+SELECT * FROM raw_events
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY entity_id
+    ORDER BY event_timestamp DESC, sequence_num DESC
+) = 1;</code></pre>
+
+    <h3 id="percentile">Percentiles and Histograms</h3>
+
+    <pre><code class="language-sql">SELECT
+    product_category,
+    sale_amount,
+    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY sale_amount)
+        OVER (PARTITION BY product_category) AS p25,
+    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY sale_amount)
+        OVER (PARTITION BY product_category) AS median,
+    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY sale_amount)
+        OVER (PARTITION BY product_category) AS p75,
+    NTILE(100) OVER (
+        PARTITION BY product_category
+        ORDER BY sale_amount
+    ) AS percentile_rank
+FROM sales;</code></pre>
+
+    <div class="quiz" data-correct="2">
+      <div class="quiz-title">Quick Check</div>
+      <p class="quiz-question">You want to keep only the first purchase per customer (by date), and filter out any results where the first purchase amount was less than $10. Which approach is most efficient in Databricks?</p>
+      <ul class="quiz-options">
+        <li>Self-join orders to itself on customer_id, filter WHERE o1.created_at = MIN(o2.created_at), then filter amount > 10</li>
+        <li>Use GROUP BY customer_id MIN(created_at), then join back to the original table, then filter amount > 10</li>
+        <li>Use QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at) = 1, then WHERE amount > 10 in the outer query or add AND amount > 10 after QUALIFY</li>
+        <li>Use DISTINCT ON (not supported in Spark SQL)</li>
+      </ul>
+      <button class="quiz-btn">Check Answer</button>
+      <div class="quiz-answer">
+        <strong>QUALIFY with ROW_NUMBER.</strong> <code>QUALIFY ROW_NUMBER() OVER (...) = 1</code> is the most efficient and readable approach. The WHERE filter can be applied either before (reduces rows before windowing) or after (filters window results). For this case: add <code>WHERE amount &gt;= 10</code> before the QUALIFY to push the filter earlier, then QUALIFY handles the deduplication: <code>WHERE amount &gt;= 10 QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at) = 1</code>.
+      </div>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Running total with reset.</strong> Given a table of daily sales by region, write a query that calculates a running total <em>that resets at the start of each month</em>. Hint: partition by both <code>region</code> and <code>DATE_TRUNC('month', sale_date)</code>.</li>
+        <li><strong>First and last value.</strong> Use <code>FIRST_VALUE()</code> and <code>LAST_VALUE()</code> to get, for each order, the customer's first-ever order amount and their most recent order amount (before the current one). Why does <code>LAST_VALUE</code> require a specific frame clause to work correctly?</li>
+        <li><strong>QUALIFY deduplication.</strong> Take a table with intentional duplicates (same primary key, multiple rows). Use QUALIFY to deduplicate, keeping the row with the highest version number or most recent timestamp. Verify by counting rows before and after.</li>
+        <li><strong>Gap detection.</strong> Given a table of user sessions with start/end times, use LAG to identify sessions where there was more than 30 minutes of inactivity since the previous session. These represent "new visit" boundaries for session stitching.</li>
+        <li><strong>Build the cohort chart.</strong> Using the cohort analysis query from this chapter as a starting point, run it against a real or sample orders table. Pivot the result so cohort months are rows and months-since-acquisition are columns (0, 1, 2, ..., 12). Hint: use the PIVOT clause from Chapter 5.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch03-delta-lake.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">3. Delta Lake</span>
+      </a>
+      <a href="ch05-advanced-sql.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">5. Advanced SQL Patterns</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

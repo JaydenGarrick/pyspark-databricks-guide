@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 9: Catalyst Optimizer &amp; AQE | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html" class="active">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 9</div>
+      <h1>Catalyst Optimizer &amp; AQE</h1>
+      <p class="chapter-subtitle">How Spark transforms your query into an execution plan. Understanding Catalyst lets you write queries that optimize well &mdash; and recognize ones that don't.</p>
+    </div>
+
+    <h2 id="catalyst-pipeline">The Catalyst Pipeline</h2>
+
+    <p>Every SQL query or DataFrame transformation goes through four stages before execution:</p>
+
+    <ol>
+      <li><strong>Parsing</strong> &mdash; SQL text → unresolved logical plan (AST)</li>
+      <li><strong>Analysis</strong> &mdash; resolve table names, column names, types → analyzed logical plan</li>
+      <li><strong>Logical Optimization</strong> &mdash; apply rule-based transformations → optimized logical plan</li>
+      <li><strong>Physical Planning</strong> &mdash; choose physical operators, cost-based join strategies → physical plan</li>
+    </ol>
+
+    <p>You can see all four in <code>EXPLAIN EXTENDED</code>:</p>
+
+    <pre><code class="language-python">spark.sql("""
+    SELECT customer_id, COUNT(*), SUM(amount)
+    FROM orders
+    WHERE status = 'completed' AND amount > 0
+    GROUP BY customer_id
+    HAVING SUM(amount) > 500
+""").explain("extended")
+
+# Output sections:
+# == Parsed Logical Plan ==        (what you wrote, unresolved)
+# == Analyzed Logical Plan ==      (columns/types resolved)
+# == Optimized Logical Plan ==     (after rule-based optimization)
+# == Physical Plan ==              (actual execution operators)</code></pre>
+
+    <h2 id="rule-based">Rule-Based Optimizations</h2>
+
+    <p>Catalyst applies dozens of transformation rules automatically. The most impactful ones:</p>
+
+    <h3 id="predicate-pushdown">Predicate Pushdown</h3>
+    <p>Filters move as close to the data source as possible. A <code>WHERE status = 'completed'</code> that appears after a join gets pushed to the scan node:</p>
+
+    <pre><code class="language-sql">-- What you write:
+SELECT o.order_id, c.email
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+WHERE o.status = 'completed';
+
+-- What Catalyst optimizes to (logically):
+SELECT o.order_id, c.email
+FROM (SELECT * FROM orders WHERE status = 'completed') o
+JOIN customers c ON o.customer_id = c.customer_id;
+-- The filter runs during the scan, not after the join
+-- Fewer rows enter the join = much less shuffle data</code></pre>
+
+    <h3 id="column-pruning">Column Pruning (Projection Pushdown)</h3>
+    <p>Catalyst reads only the columns needed, not <code>SELECT *</code>:</p>
+
+    <pre><code class="language-sql">-- What you write:
+SELECT customer_id, SUM(amount)
+FROM orders
+GROUP BY customer_id;
+
+-- Catalyst reads only [customer_id, amount] from Parquet
+-- Not the 20 other columns in the table
+-- This is why columnar formats (Parquet/Delta) are fast for analytics</code></pre>
+
+    <h3 id="constant-folding">Constant Folding and Simplification</h3>
+    <pre><code class="language-sql">-- Catalyst evaluates these at plan time, not per row:
+WHERE 1 + 1 = 2           -- becomes TRUE (whole table)
+WHERE amount * 1.0 > 100  -- simplifies to amount > 100.0
+WHERE amount BETWEEN 0 AND 1000  -- becomes amount >= 0 AND amount <= 1000</code></pre>
+
+    <h2 id="aqe">Adaptive Query Execution (AQE)</h2>
+
+    <p>AQE (Spark 3.0+, enabled by default on Databricks) re-optimizes query plans <em>at runtime</em> based on actual data statistics collected during execution. It overcomes the fundamental limitation of static planning: the optimizer doesn't know actual data sizes until the job starts running.</p>
+
+    <p>AQE kicks in after each shuffle stage completes, using the actual partition sizes and row counts to make better decisions for subsequent stages.</p>
+
+    <h3 id="aqe-partition">Dynamic Partition Coalescing</h3>
+
+    <p>After a shuffle, AQE coalesces many small shuffle partitions into fewer, larger ones. This eliminates the "many tiny tasks" problem for queries that produce less data than expected:</p>
+
+    <pre><code class="language-python"># Without AQE: 200 shuffle partitions (default), most nearly empty after filtering
+# 200 tasks each reading 1KB = massively inefficient
+
+# With AQE: detects small partitions and coalesces
+# 200 partitions → 8 coalesced partitions → 8 tasks each reading 25MB
+# Net: 25x fewer tasks, much less scheduling overhead
+
+# Control AQE coalescing
+spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")  # default
+spark.conf.set("spark.sql.adaptive.advisoryPartitionSizeInBytes", "67108864")  # 64MB target</code></pre>
+
+    <h3 id="aqe-join">Dynamic Join Strategy Selection</h3>
+
+    <p>AQE can switch from sort-merge to broadcast join at runtime if a join side turns out to be smaller than expected after filtering:</p>
+
+    <pre><code class="language-python"># Query: join orders to customers, filtered
+# Static plan chose sort-merge (customers is 500MB before filter)
+# But WHERE region = 'US' reduces customers to 5MB
+
+# AQE detects the actual size after the filter executes
+# and switches to broadcast join at runtime
+# No hint needed — AQE does this automatically
+
+# Monitor in the Spark UI: look for "AQE" annotations in the SQL tab
+# "dynamically determined broadcast" in the plan
+
+spark.conf.set("spark.sql.adaptive.enabled", "true")  # default on Databricks</code></pre>
+
+    <h3 id="aqe-skew">AQE Skew Join Handling</h3>
+
+    <pre><code class="language-python"># AQE automatically detects skewed partitions (one partition >> median size)
+# and splits them into multiple tasks
+
+spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")  # default
+spark.conf.set("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5")  # partition > 5x median = skewed
+spark.conf.set("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "268435456")  # 256MB min to trigger</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">AQE Limitations</div>
+      <p>AQE cannot help with: (1) skew in the first stage (before any shuffle), (2) broadcast OOM caused by a table being larger than executor memory, (3) queries with no shuffles (nothing to re-plan). For skew before the first shuffle, use salting (Chapter 8). AQE is also less effective when statistics are completely absent &mdash; it re-plans based on actual sizes but can't predict what the first stage will produce.</p>
+    </div>
+
+    <h2 id="config-knobs">Key Configuration Knobs</h2>
+
+    <table>
+      <thead>
+        <tr><th>Config</th><th>Default</th><th>When to Change</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>spark.sql.shuffle.partitions</code></td><td>200</td><td>Decrease for small datasets (&lt;10GB); AQE overrides this anyway</td></tr>
+        <tr><td><code>spark.sql.autoBroadcastJoinThreshold</code></td><td>10MB</td><td>Increase to 50-100MB if dimension tables are larger but small enough to broadcast safely</td></tr>
+        <tr><td><code>spark.sql.adaptive.enabled</code></td><td>true</td><td>Never disable unless debugging AQE-specific issue</td></tr>
+        <tr><td><code>spark.sql.adaptive.coalescePartitions.minPartitionNum</code></td><td>1</td><td>Set to cluster executor count to prevent under-parallelism after coalescing</td></tr>
+        <tr><td><code>spark.memory.fraction</code></td><td>0.6</td><td>Increase to 0.7-0.8 if seeing spills on memory-heavy aggregations</td></tr>
+        <tr><td><code>spark.sql.files.maxPartitionBytes</code></td><td>128MB</td><td>Increase for large scans with slow task overhead; decrease for very selective queries</td></tr>
+      </tbody>
+    </table>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Trace the optimization pipeline.</strong> Write a moderately complex query (2 joins, a GROUP BY, a HAVING clause). Run <code>EXPLAIN EXTENDED</code> and compare the Optimized Logical Plan to the Parsed Logical Plan. Identify at least two optimizations Catalyst applied (predicate pushdown, column pruning, join reordering, etc.).</li>
+        <li><strong>Observe AQE in action.</strong> Run a query that filters one join side to a very small result before the join. Check the SQL tab in the Spark UI for any AQE annotations ("dynamically converted to broadcast"). Compare the plan with and without <code>spark.sql.adaptive.enabled = false</code>.</li>
+        <li><strong>Tune shuffle partitions.</strong> Run an aggregation on a small table (under 1GB). Check how many shuffle partitions AQE coalesced to. Then disable AQE and set <code>shuffle.partitions = 8</code> manually to match. Which approach produced better task utilization?</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch08-joins.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">8. Join Strategies</span>
+      </a>
+      <a href="ch10-workflows.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">10. Workflows &amp; Orchestration</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

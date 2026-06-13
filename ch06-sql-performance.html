@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 6: SQL Performance Patterns | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html" class="active">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 6</div>
+      <h1>SQL Performance Patterns</h1>
+      <p class="chapter-subtitle">Reading query plans, join hints, predicate pushdown, and statistics. Stop guessing why your SQL is slow.</p>
+    </div>
+
+    <h2 id="explain">EXPLAIN: Reading Query Plans</h2>
+
+    <p>Before optimizing anything, read the plan. <code>EXPLAIN</code> shows what Spark intends to do with your query:</p>
+
+    <pre><code class="language-sql">-- Show the optimized logical plan (most useful for SQL)
+EXPLAIN FORMATTED SELECT * FROM orders WHERE customer_id = 'C001';
+
+-- Show all plan stages: parsed → analyzed → optimized → physical
+EXPLAIN EXTENDED SELECT * FROM orders o JOIN customers c USING (customer_id);
+
+-- Show only the physical plan with stage/cost info
+EXPLAIN COST SELECT * FROM orders GROUP BY customer_id;</code></pre>
+
+    <pre><code class="language-python"># PySpark equivalent
+df = spark.sql("SELECT * FROM orders WHERE customer_id = 'C001'")
+df.explain("formatted")   # same as EXPLAIN FORMATTED
+df.explain("extended")    # same as EXPLAIN EXTENDED
+df.explain("cost")        # same as EXPLAIN COST</code></pre>
+
+    <p>Key things to look for in a physical plan:</p>
+
+    <table>
+      <thead>
+        <tr><th>Node Type</th><th>What it means</th><th>Performance signal</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>FileScan</code></td><td>Reading files from storage</td><td>Check <code>PushedFilters</code> — missing filters = full scan</td></tr>
+        <tr><td><code>BroadcastHashJoin</code></td><td>Small table broadcast to all workers</td><td>Good — no shuffle needed</td></tr>
+        <tr><td><code>SortMergeJoin</code></td><td>Both sides shuffled and sorted</td><td>Expected for large-large joins, check for skew</td></tr>
+        <tr><td><code>HashAggregate</code></td><td>In-memory hash aggregation</td><td>Look for partial + final stages (two-phase)</td></tr>
+        <tr><td><code>Exchange</code></td><td>Shuffle between stages</td><td>Count shuffles — each is expensive I/O</td></tr>
+        <tr><td><code>Sort</code></td><td>Sorting within a stage</td><td>Needed for merge joins and ORDER BY</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="pushdown">Predicate Pushdown</h3>
+
+    <p>Predicate pushdown means filters are applied at the file/storage level, not after reading all data into memory. Look for <code>PushedFilters</code> in the <code>FileScan</code> node:</p>
+
+    <pre><code class="language-sql">-- This WILL push the filter to the file scan
+-- (Delta min/max stats allow skipping files where customer_id not in range)
+SELECT * FROM catalog.silver.orders
+WHERE customer_id = 'C001'
+  AND event_date >= '2024-01-01';
+
+-- Check the plan:
+-- FileScan delta [...] PushedFilters: [IsNotNull(customer_id), EqualTo(customer_id,C001), ...]</code></pre>
+
+    <pre><code class="language-sql">-- This may NOT push down correctly if you wrap the column in a function
+-- Spark can't push down filters on transformed columns
+SELECT * FROM catalog.silver.orders
+WHERE LOWER(customer_id) = 'c001';  -- function wrapping prevents pushdown
+-- Fix: store customer_id already lowercased, or filter on stored case</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">Functions Kill Pushdown</div>
+      <p>Wrapping a column in any function &mdash; <code>LOWER()</code>, <code>CAST()</code>, <code>DATE_TRUNC()</code>, <code>YEAR()</code> &mdash; usually prevents predicate pushdown for that column. The exception is when the function can be pushed to the storage format layer. For date filtering, filter on the raw timestamp or a partition column, not on <code>DATE_TRUNC()</code> of a timestamp column.</p>
+    </div>
+
+    <h2 id="join-hints">Join Hints</h2>
+
+    <p>Sometimes Spark's optimizer chooses the wrong join strategy. Hints let you override it:</p>
+
+    <pre><code class="language-sql">-- Force a broadcast join (small table on the right)
+SELECT /*+ BROADCAST(c) */ *
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id;
+
+-- Alternative syntax
+SELECT /*+ BROADCASTJOIN(customers) */ *
+FROM orders
+JOIN customers USING (customer_id);
+
+-- Force sort-merge join
+SELECT /*+ MERGE(o, c) */ *
+FROM orders o
+JOIN customers c USING (customer_id);
+
+-- Force shuffle hash join (faster than sort-merge for non-sorted data)
+SELECT /*+ SHUFFLE_HASH(o) */ *
+FROM orders o
+JOIN customers c USING (customer_id);
+
+-- Force shuffle-and-replicate (use when one side is very small)
+SELECT /*+ SHUFFLE_REPLICATE_NL(c) */ *
+FROM orders o
+JOIN customers c ON o.category = c.preferred_category;</code></pre>
+
+    <pre><code class="language-python"># PySpark hint API
+df = orders.join(
+    customers.hint("broadcast"),
+    on="customer_id"
+)
+
+# Or use the SQL hint in spark.sql()
+result = spark.sql("""
+    SELECT /*+ BROADCAST(c) */ o.*, c.email
+    FROM orders o
+    JOIN customers c USING (customer_id)
+""")</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">When to Use Broadcast Hints</div>
+      <p>Broadcast hints are appropriate when one side is genuinely small (&lt;200MB after filtering, not before). Databricks auto-broadcasts tables below <code>spark.sql.autoBroadcastJoinThreshold</code> (default 10MB). If your dimension table is 50MB but not auto-broadcasting, check whether Spark has current table statistics &mdash; it may not know the size. After <code>ANALYZE TABLE</code>, auto-broadcast may kick in without needing a hint.</p>
+    </div>
+
+    <h2 id="statistics">Table Statistics and CBO</h2>
+
+    <p>Spark's cost-based optimizer (CBO) uses table statistics to choose join order and join strategies. Without statistics, it guesses &mdash; and often wrong:</p>
+
+    <pre><code class="language-sql">-- Compute and store table-level statistics
+ANALYZE TABLE catalog.silver.orders COMPUTE STATISTICS;
+
+-- Compute column-level statistics (needed for join ordering)
+ANALYZE TABLE catalog.silver.orders
+COMPUTE STATISTICS FOR COLUMNS customer_id, event_date, amount;
+
+-- All columns
+ANALYZE TABLE catalog.silver.orders COMPUTE STATISTICS FOR ALL COLUMNS;
+
+-- View stored statistics
+DESCRIBE EXTENDED catalog.silver.orders;</code></pre>
+
+    <pre><code class="language-python"># Check if statistics are stale (key diagnostic step)
+spark.sql("DESCRIBE EXTENDED catalog.silver.orders") \
+    .filter("col_name IN ('Statistics', 'numFiles', 'sizeInBytes')") \
+    .display()</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">Delta Statistics Are Automatic for File-Level</div>
+      <p>Delta Lake automatically maintains min/max statistics per column for each Parquet file as part of the transaction log. These are used for <strong>data skipping</strong> (skipping entire files that can't contain matching rows). This is different from CBO statistics. <code>ANALYZE TABLE</code> adds row-count and column-cardinality statistics at the table level, which helps the optimizer choose join order and estimate output sizes.</p>
+    </div>
+
+    <h2 id="caching">Caching and Persistence</h2>
+
+    <pre><code class="language-sql">-- Cache a table in memory (SQL)
+CACHE TABLE catalog.silver.customers;
+
+-- Cache with lazy evaluation (doesn't trigger a scan until first use)
+CACHE LAZY TABLE catalog.silver.customers;
+
+-- Remove from cache
+UNCACHE TABLE catalog.silver.customers;
+
+-- Check what's cached
+SELECT * FROM sys.caches;  -- Databricks-specific</code></pre>
+
+    <pre><code class="language-python"># Cache a DataFrame
+df_customers = spark.table("catalog.silver.customers").cache()
+df_customers.count()  # triggers the cache load
+
+# Persist with a specific storage level
+from pyspark.storagelevel import StorageLevel
+df_customers.persist(StorageLevel.MEMORY_AND_DISK)
+
+# Release cache
+df_customers.unpersist()</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">Caching vs Delta Caching</div>
+      <p>Databricks has <strong>two distinct caches</strong>. (1) <strong>Spark cache</strong> (<code>df.cache()</code>, <code>CACHE TABLE</code>): caches deserialized data in executor memory/disk. Lost when cluster is restarted. (2) <strong>Delta cache</strong> (automatic on I3/I3en instances): caches raw Parquet data on local SSD on each worker node. Persists across queries and notebook sessions. The Delta cache is usually better for large tables you query repeatedly. The Spark cache is better for DataFrames you reference multiple times in a single job.</p>
+    </div>
+
+    <h2 id="anti-patterns">Common SQL Anti-Patterns</h2>
+
+    <table>
+      <thead>
+        <tr><th>Anti-Pattern</th><th>Problem</th><th>Fix</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>SELECT *</code> on wide tables</td><td>Reads all columns; misses projection pruning</td><td>Select only needed columns</td></tr>
+        <tr><td><code>DISTINCT</code> on large result sets</td><td>Full shuffle + sort for dedup</td><td>Use <code>ROW_NUMBER() QUALIFY</code> if dedup key is known</td></tr>
+        <tr><td>Functions on filter columns</td><td>Prevents predicate pushdown</td><td>Filter on raw column value or a precomputed column</td></tr>
+        <tr><td>Multiple <code>COUNT(DISTINCT)</code></td><td>Each is a separate shuffle pass</td><td>Use <code>approx_count_distinct()</code> or combine into one pass with <code>COLLECT_SET</code></td></tr>
+        <tr><td>Correlated subqueries</td><td>Re-executed once per outer row</td><td>Rewrite as JOIN or window function</td></tr>
+        <tr><td>Large IN() lists (&gt;100 values)</td><td>Serialization overhead and poor planning</td><td>Use a JOIN to a temp table or broadcast variable</td></tr>
+      </tbody>
+    </table>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Read a query plan.</strong> Write a query that joins two large tables. Run <code>EXPLAIN FORMATTED</code> and identify: what join strategy was chosen? Were filters pushed down? How many shuffles occur? Now add a <code>BROADCAST</code> hint for the smaller table and compare the plans.</li>
+        <li><strong>Statistics impact.</strong> Run <code>ANALYZE TABLE</code> on a table you query frequently. Before and after, run the same query and compare the query plans. Did join ordering or strategy change? Measure the execution time difference.</li>
+        <li><strong>Find a pushdown failure.</strong> Write a query where you filter using a function on a column (e.g., <code>YEAR(event_date) = 2024</code>). Check the plan for <code>PushedFilters</code>. Then rewrite using a range filter (<code>event_date BETWEEN '2024-01-01' AND '2024-12-31'</code>) and compare. Which has better pushdown?</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch05-advanced-sql.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">5. Advanced SQL Patterns</span>
+      </a>
+      <a href="ch07-data-layout.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">7. Data Layout &amp; Partitioning</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

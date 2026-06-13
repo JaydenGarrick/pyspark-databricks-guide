@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 10: Workflows &amp; Orchestration | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html" class="active">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 10</div>
+      <h1>Workflows &amp; Orchestration</h1>
+      <p class="chapter-subtitle">Databricks Jobs, task DAGs, cluster types, parameters, task values, and error handling. How to turn a notebook into a production pipeline.</p>
+    </div>
+
+    <h2 id="jobs-vs-notebooks">Jobs vs Interactive Notebooks</h2>
+
+    <p>Interactive notebooks are for development. Databricks Jobs are for production. The key differences:</p>
+
+    <table>
+      <thead>
+        <tr><th>Aspect</th><th>Interactive Notebook</th><th>Databricks Job</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cluster type</td><td>All-purpose (expensive)</td><td>Job cluster (30-50% cheaper DBUs)</td></tr>
+        <tr><td>Scheduling</td><td>Manual</td><td>Cron, event-triggered, or manual</td></tr>
+        <tr><td>Parameters</td><td>Widgets set manually</td><td>Passed as job parameters</td></tr>
+        <tr><td>Error handling</td><td>Manual retry</td><td>Automatic retry with configurable policy</td></tr>
+        <tr><td>Alerting</td><td>None</td><td>Email/webhook on failure</td></tr>
+        <tr><td>Audit trail</td><td>Notebook revision history</td><td>Run history with logs per run</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="task-types">Task Types</h2>
+
+    <p>A Databricks Job is a DAG of Tasks. Each task can be one of several types:</p>
+
+    <ul>
+      <li><strong>Notebook task</strong> &mdash; runs a Databricks notebook; parameters passed as widget values</li>
+      <li><strong>Python script task</strong> &mdash; runs a <code>.py</code> file from a Git repo or DBFS; parameters as command-line args or env vars</li>
+      <li><strong>Python wheel task</strong> &mdash; runs a packaged Python wheel with an entry point</li>
+      <li><strong>SQL task</strong> &mdash; runs SQL against a SQL warehouse (not a cluster); good for queries and dashboards</li>
+      <li><strong>dbt task</strong> &mdash; runs a dbt project natively</li>
+      <li><strong>Spark JAR task</strong> &mdash; runs a compiled Scala/Java JAR</li>
+    </ul>
+
+    <div class="callout info">
+      <div class="callout-title">Notebook vs Python Script for Production</div>
+      <p>Notebooks are convenient but have limitations: they can't be unit-tested with standard Python tools, they're harder to code-review in Git (JSON format with output), and they mix code with display output. For serious production pipelines, consider migrating notebook logic to Python wheel packages. Databricks Asset Bundles (DABs) make this workflow manageable: keep notebooks for exploration, ship production code as packages.</p>
+    </div>
+
+    <h2 id="task-dag">Task Dependencies</h2>
+
+    <p>Tasks within a job form a DAG. You define dependencies in the job UI or JSON definition:</p>
+
+    <pre><code class="language-json">{
+  "name": "daily-etl-pipeline",
+  "tasks": [
+    {
+      "task_key": "ingest_bronze",
+      "notebook_task": { "notebook_path": "/pipelines/bronze/ingest_orders" },
+      "job_cluster_key": "etl_cluster"
+    },
+    {
+      "task_key": "process_silver",
+      "depends_on": [{"task_key": "ingest_bronze"}],
+      "notebook_task": { "notebook_path": "/pipelines/silver/process_orders" },
+      "job_cluster_key": "etl_cluster"
+    },
+    {
+      "task_key": "build_gold_revenue",
+      "depends_on": [{"task_key": "process_silver"}],
+      "notebook_task": { "notebook_path": "/pipelines/gold/revenue_metrics" },
+      "job_cluster_key": "etl_cluster"
+    },
+    {
+      "task_key": "build_gold_customers",
+      "depends_on": [{"task_key": "process_silver"}],
+      "notebook_task": { "notebook_path": "/pipelines/gold/customer_metrics" },
+      "job_cluster_key": "etl_cluster"
+    }
+  ]
+}</code></pre>
+
+    <p>In this example, <code>build_gold_revenue</code> and <code>build_gold_customers</code> both depend on <code>process_silver</code> but not on each other &mdash; they run in parallel after silver completes.</p>
+
+    <h2 id="cluster-types-jobs">Job Cluster vs All-Purpose Cluster</h2>
+
+    <pre><code class="language-json">{
+  "job_clusters": [
+    {
+      "job_cluster_key": "etl_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "r5.2xlarge",
+        "num_workers": 4,
+        "aws_attributes": {
+          "availability": "SPOT_WITH_FALLBACK"
+        },
+        "spark_conf": {
+          "spark.sql.adaptive.enabled": "true",
+          "spark.databricks.delta.optimizeWrite.enabled": "true"
+        },
+        "auto_termination_minutes": 0
+      }
+    }
+  ]
+}</code></pre>
+
+    <p>To reuse an existing all-purpose cluster (for debugging only, not production):</p>
+
+    <pre><code class="language-json">{
+  "tasks": [{
+    "task_key": "debug_task",
+    "existing_cluster_id": "1234-567890-abc12345"
+  }]
+}</code></pre>
+
+    <h2 id="parameters">Job Parameters and Task Values</h2>
+
+    <p>Parameters pass values into notebooks as widget values or Python script args. Task values pass outputs from one task to another:</p>
+
+    <pre><code class="language-python"># In the upstream task (bronze ingestion)
+# After processing, record how many rows were ingested
+rows_ingested = df_bronze.count()
+
+# Pass this value to downstream tasks
+dbutils.jobs.taskValues.set(key="rows_ingested", value=rows_ingested)
+dbutils.jobs.taskValues.set(key="run_date", value=str(date.today()))
+dbutils.jobs.taskValues.set(key="has_data", value=rows_ingested > 0)</code></pre>
+
+    <pre><code class="language-python"># In a downstream task
+rows_ingested = dbutils.jobs.taskValues.get(
+    taskKey="ingest_bronze",
+    key="rows_ingested",
+    default=0
+)
+run_date = dbutils.jobs.taskValues.get(
+    taskKey="ingest_bronze",
+    key="run_date"
+)
+
+print(f"Processing {rows_ingested} rows for {run_date}")
+
+# Conditional logic based on upstream result
+if rows_ingested == 0:
+    print("No data to process — skipping silver transform")
+    dbutils.notebook.exit("SKIPPED")</code></pre>
+
+    <h2 id="error-handling">Error Handling and Retries</h2>
+
+    <pre><code class="language-json">{
+  "tasks": [{
+    "task_key": "process_silver",
+    "retry_on_timeout": true,
+    "max_retries": 3,
+    "min_retry_interval_millis": 60000,
+    "timeout_seconds": 3600
+  }]
+}</code></pre>
+
+    <p>For task-level error handling within a notebook:</p>
+
+    <pre><code class="language-python">import traceback
+
+try:
+    # Main processing logic
+    df = spark.table("catalog.bronze.orders")
+    processed = transform_silver(df)
+    write_silver(processed)
+    dbutils.jobs.taskValues.set("status", "SUCCESS")
+    dbutils.jobs.taskValues.set("rows_written", processed.count())
+
+except Exception as e:
+    error_msg = f"Silver processing failed: {str(e)}\n{traceback.format_exc()}"
+    print(error_msg)
+
+    # Log to an error table
+    spark.createDataFrame([(str(date.today()), "silver_orders", error_msg)],
+                           ["run_date", "pipeline", "error"]) \
+        .write.format("delta").mode("append") \
+        .saveAsTable("catalog.monitoring.pipeline_errors")
+
+    dbutils.jobs.taskValues.set("status", "FAILED")
+    raise  # re-raise to mark the task as failed</code></pre>
+
+    <h2 id="scheduling">Scheduling and Triggers</h2>
+
+    <pre><code class="language-json">{
+  "schedule": {
+    "quartz_cron_expression": "0 0 6 * * ?",
+    "timezone_id": "America/New_York",
+    "pause_status": "UNPAUSED"
+  }
+}</code></pre>
+
+    <p>Common cron expressions:</p>
+    <ul>
+      <li><code>0 0 6 * * ?</code> &mdash; 6 AM every day</li>
+      <li><code>0 0 */4 * * ?</code> &mdash; every 4 hours</li>
+      <li><code>0 0 8 ? * MON-FRI</code> &mdash; 8 AM weekdays only</li>
+      <li><code>0 0/30 * * * ?</code> &mdash; every 30 minutes</li>
+    </ul>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Convert a notebook to a job.</strong> Take a notebook you've been running manually. Create a Databricks Job with a job cluster (not your interactive cluster). Add two widgets for <code>run_date</code> and <code>env</code>. Run the job manually once, inspect the run output and logs.</li>
+        <li><strong>Build a two-task DAG.</strong> Create a job with two tasks: task A generates a summary count, stores it with <code>dbutils.jobs.taskValues.set</code>, and task B reads it with <code>dbutils.jobs.taskValues.get</code> and prints it. Verify the value passes correctly.</li>
+        <li><strong>Add retry logic.</strong> Intentionally break a task (divide by zero, bad table name). Configure 3 retries with 60-second backoff. Run the job and observe the retry behavior in the run timeline. Then fix the bug and confirm the job succeeds.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch09-catalyst-aqe.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">9. Catalyst Optimizer &amp; AQE</span>
+      </a>
+      <a href="ch11-unity-catalog.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">11. Unity Catalog</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

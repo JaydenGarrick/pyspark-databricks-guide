@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch 12: AWS Integration | PySpark to Databricks</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="index.html" class="logo">PySpark to Databricks <span>Deep Dive</span></a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://docs.databricks.com/" target="_blank">Databricks Docs</a>
+      <a href="https://spark.apache.org/docs/latest/sql-ref.html" target="_blank">Spark SQL Ref</a>
+    </div>
+  </nav>
+  <div class="progress-bar"></div>
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+  <aside class="sidebar">
+    <div class="part-title">Part I: The Databricks World</div>
+    <a href="index.html">Home</a>
+    <a href="ch01-architecture.html">1. Architecture &amp; Clusters</a>
+    <a href="ch02-notebooks.html">2. Notebooks &amp; Dev Patterns</a>
+    <a href="ch03-delta-lake.html">3. Delta Lake</a>
+    <div class="part-title">Part II: Spark SQL Mastery</div>
+    <a href="ch04-window-functions.html">4. Window Functions &amp; Analytics</a>
+    <a href="ch05-advanced-sql.html">5. Advanced SQL Patterns</a>
+    <a href="ch06-sql-performance.html">6. SQL Performance Patterns</a>
+    <div class="part-title">Part III: Performance Engineering</div>
+    <a href="ch07-data-layout.html">7. Data Layout &amp; Partitioning</a>
+    <a href="ch08-joins.html">8. Join Strategies</a>
+    <a href="ch09-catalyst-aqe.html">9. Catalyst Optimizer &amp; AQE</a>
+    <div class="part-title">Part IV: The Platform</div>
+    <a href="ch10-workflows.html">10. Workflows &amp; Orchestration</a>
+    <a href="ch11-unity-catalog.html">11. Unity Catalog</a>
+    <a href="ch12-aws-integration.html" class="active">12. AWS Integration</a>
+    <div class="part-title">Part V: Building Things</div>
+    <a href="ch13-project-etl-pipeline.html">13. Project: ETL Pipeline</a>
+    <a href="ch14-project-sql-analytics.html">14. Project: SQL Analytics</a>
+    <a href="ch15-project-data-quality.html">15. Project: Data Quality</a>
+  </aside>
+
+  <main class="main-content">
+    <div class="chapter-header">
+      <div class="chapter-number">Chapter 12</div>
+      <h1>AWS Integration</h1>
+      <p class="chapter-subtitle">Instance profiles (not access keys), Databricks secrets, S3 access patterns, and cross-account IAM. How Databricks and AWS talk to each other.</p>
+    </div>
+
+    <h2 id="never-access-keys">Rule #1: Never Use Access Keys in Notebooks</h2>
+
+    <p>This deserves its own section because it's the most common security mistake on Databricks. Access keys (<code>aws_access_key_id</code> / <code>aws_secret_access_key</code>) hardcoded in notebooks or stored in variables are a critical security risk:</p>
+
+    <pre><code class="language-python"># NEVER DO THIS
+spark.conf.set("fs.s3a.access.key", "AKIAIOSFODNN7EXAMPLE")       # visible in logs
+spark.conf.set("fs.s3a.secret.key", "wJalrXUtnFEMI/K7MDENG/bPxR")  # visible in Git history
+
+# ALSO AVOID (still exposed in notebook state)
+import boto3
+s3 = boto3.client(
+    's3',
+    aws_access_key_id="AKIAIOSFODNN7EXAMPLE",  # don't do this
+    aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxR"
+)</code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">Access Keys in Notebooks = Security Incident</div>
+      <p>Databricks notebooks are version-controlled and shared across teams. Access keys in notebooks are almost always leaked: into Git history, into run logs, into screenshots, into shared notebook links. They also expire unpredictably. Use instance profiles (cluster-attached IAM roles) or Databricks secrets instead. Both are zero-code-change approaches once configured by an admin.</p>
+    </div>
+
+    <h2 id="instance-profiles">Instance Profiles: The Right Way</h2>
+
+    <p>An instance profile is an IAM role attached to EC2 instances (your cluster workers). All code on those instances inherits the role's permissions automatically &mdash; no credentials in code:</p>
+
+    <pre><code class="language-python"># With instance profile attached to the cluster: just use the path
+df = spark.read.parquet("s3://my-secure-bucket/data/")
+
+# boto3 also inherits the role automatically
+import boto3
+s3 = boto3.client('s3')  # no credentials needed — IAM role is implicit
+s3.get_object(Bucket="my-secure-bucket", Key="config/settings.json")</code></pre>
+
+    <p>Instance profiles are configured by Databricks admins at the workspace level, then attached to clusters at cluster creation. No code changes needed in notebooks.</p>
+
+    <h2 id="databricks-secrets">Databricks Secrets: For Non-IAM Credentials</h2>
+
+    <p>For credentials that aren't IAM-controlled (API keys, database passwords, third-party service tokens), use Databricks secrets:</p>
+
+    <pre><code class="language-bash"># Set up a secret scope and secrets using the Databricks CLI
+databricks secrets create-scope --scope my-api-scope
+databricks secrets put --scope my-api-scope --key stripe-api-key
+databricks secrets put --scope my-api-scope --key postgres-password
+
+# List scopes and keys (CLI)
+databricks secrets list-scopes
+databricks secrets list --scope my-api-scope</code></pre>
+
+    <pre><code class="language-python"># In notebooks: retrieve and use
+stripe_key = dbutils.secrets.get(scope="my-api-scope", key="stripe-api-key")
+db_password = dbutils.secrets.get(scope="my-api-scope", key="postgres-password")
+
+# Use in connection string
+jdbc_url = f"jdbc:postgresql://my-db.cluster.us-east-1.rds.amazonaws.com:5432/orders"
+df = spark.read \
+    .format("jdbc") \
+    .option("url", jdbc_url) \
+    .option("dbtable", "orders") \
+    .option("user", "app_user") \
+    .option("password", db_password) \  # secret value — redacted in cell output
+    .load()</code></pre>
+
+    <div class="callout info">
+      <div class="callout-title">AWS Secrets Manager-backed Scopes</div>
+      <p>Databricks secrets can be backed by AWS Secrets Manager. With an AWS Secrets Manager-backed scope, secrets created in AWS Secrets Manager are automatically available in Databricks without duplicating them. This is the recommended approach for organizations already using AWS Secrets Manager as their secrets management platform.</p>
+    </div>
+
+    <h2 id="s3-access">S3 Access Patterns</h2>
+
+    <table>
+      <thead>
+        <tr><th>Pattern</th><th>How</th><th>When to Use</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Instance profile (IAM role)</td><td>Role attached to cluster; direct <code>s3://</code> paths</td><td>Preferred for all production access</td></tr>
+        <tr><td>Unity Catalog External Location</td><td>Storage credential + external location in UC</td><td>Fine-grained, per-path access control in UC workspaces</td></tr>
+        <tr><td>Databricks secret + Spark conf</td><td><code>spark.conf.set</code> with secret value</td><td>Legacy pattern; avoid for new work</td></tr>
+        <tr><td>DBFS mount (deprecated)</td><td><code>dbutils.fs.mount</code></td><td>Legacy only; do not create new mounts in UC workspaces</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="cross-account">Cross-Account S3 Access</h2>
+
+    <p>Databricks clusters live in your AWS account, but data may be in a different AWS account. Cross-account access requires both a bucket policy (in the data account) and an IAM role trust (in the Databricks account):</p>
+
+    <pre><code class="language-json">// S3 bucket policy in the data account
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "AWS": "arn:aws:iam::DATABRICKS-ACCOUNT-ID:role/databricks-instance-profile"
+    },
+    "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+    "Resource": [
+      "arn:aws:s3:::cross-account-data-bucket",
+      "arn:aws:s3:::cross-account-data-bucket/*"
+    ]
+  }]
+}</code></pre>
+
+    <pre><code class="language-python"># Once the IAM/bucket policy is set, access works transparently
+df = spark.read.parquet("s3://cross-account-data-bucket/data/2024/")
+# No code change — instance profile handles cross-account auth</code></pre>
+
+    <h2 id="vpc">VPC and Network Considerations</h2>
+
+    <p>Databricks clusters run in your VPC. For private S3 access (traffic never leaves AWS network):</p>
+
+    <ul>
+      <li><strong>VPC Endpoint for S3:</strong> Route S3 traffic through the VPC endpoint instead of public internet. Required for security-sensitive workloads.</li>
+      <li><strong>PrivateLink:</strong> For the Databricks control plane connection. Prevents traffic from leaving AWS.</li>
+      <li><strong>Security groups:</strong> Clusters need egress to S3 (port 443) and to the Databricks control plane.</li>
+    </ul>
+
+    <div class="callout info">
+      <div class="callout-title">S3 Transfer Costs</div>
+      <p>Data transfer out of AWS to the internet costs money. Data transfer between S3 and EC2 in the <strong>same region</strong> is free. Always ensure your Databricks workspace and S3 buckets are in the same AWS region. Cross-region S3 access works but incurs data transfer costs of ~$0.02/GB and higher latency. When designing multi-region architectures, replicate data to the local region first.</p>
+    </div>
+
+    <div class="exercise">
+      <div class="exercise-title">Exercises</div>
+      <ol>
+        <li><strong>Secret scope audit.</strong> List all secret scopes in your workspace with <code>dbutils.secrets.listScopes()</code>. For each scope, list the keys. Identify any notebooks that hardcode credentials (grep your repo for <code>access_key</code>, <code>password =</code>, <code>token =</code> in plain text) and plan a migration to secrets.</li>
+        <li><strong>Instance profile verification.</strong> If your cluster has an instance profile attached, verify it works: read a file from S3 using a direct path (<code>s3://your-bucket/test-file</code>) and confirm no credential configuration is needed in code. If you don't have an instance profile, document what IAM role would need to exist and what policies it would need.</li>
+        <li><strong>Secret vs environment variable.</strong> Retrieve a secret value with <code>dbutils.secrets.get()</code> and try to <code>print()</code> it in a cell. Confirm that Databricks redacts it in the cell output (shows <code>[REDACTED]</code>). Then set the same value as an environment variable and print it — observe that it's NOT redacted. Document why you'd always prefer secrets over environment variables.</li>
+      </ol>
+    </div>
+
+    <nav class="chapter-nav">
+      <a href="ch11-unity-catalog.html" class="prev">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">11. Unity Catalog</span>
+      </a>
+      <a href="ch13-project-etl-pipeline.html" class="next">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">13. Project: ETL Pipeline</span>
+      </a>
+    </nav>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
