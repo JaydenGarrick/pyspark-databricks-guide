@@ -1,0 +1,19 @@
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[redirects]]
+  from = "/ch01"
+  to = "/ch01-notebooks.html"
+  status = 301
+
+[[redirects]]
+  from = "/ch02"
+  to = "/ch02-architecture.html"
+  status = 301
